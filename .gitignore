@@ -1,0 +1,43 @@
+# AmdNPU-Converter — gitignore
+# (Uppdaterad: lagg till enligt projektstandard. Ror ej tracked kod.)
+
+# --- Node / Tauri frontend ---
+node_modules/
+dist/
+
+# --- Rust / Tauri backend ---
+target/
+
+# --- Python / workers ---
+.venv/
+.venv*/
+workers/.venv/
+workers/.venv-winml/
+workers/.venv-quark/
+__pycache__/
+*.pyc
+*.pyo
+
+# --- Loggar (appen skriver $APPDATA/npu-converter/logs/{job_id}.log) ---
+*.log
+logs/
+
+# --- AppData / cache-dirs (lokala, aldrig i git) ---
+AppData/
+.cache/
+vaip-cache/
+
+# --- Byggartefakter (pipeline-output, aldrig i git) ---
+artifacts/
+calibration/*.npz
+calibration/*.npy
+
+# --- Nedladdningar / stora filer ---
+# Lokala modellnedladdningar (inkl. *.onnx du lagger har):
+downloads/
+*.onnx.download
+*.partial
+*.tmp
+
+# OBS: *.onnx ignoreras INTE globalt — sma test-/fixture-onnx i
+# versionshanterade mappar behalls. Stora filer hor hemma i downloads//artifacts/.

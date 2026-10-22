@@ -1,0 +1,29 @@
+[project]
+name = "amdnpu-workers"
+version = "0.1.0"
+description = "Python Worker Engine for AMD NPU Model Converter"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "huggingface_hub>=0.23",
+    "safetensors>=0.4",
+    "torch>=2.2",
+    "onnx>=1.16",
+    "onnxruntime>=1.18",
+    "onnxruntime-directml; sys_platform == 'win32'",
+    "numpy>=1.26",
+    "transformers>=4.41",
+    "pydantic>=2.6",
+    "click>=8.1",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[tool.ruff]
+target-version = "py311"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"

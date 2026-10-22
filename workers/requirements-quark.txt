@@ -1,0 +1,9 @@
+# Quark isolated environment (version-locked separately from winml).
+# Install: uv pip install -r requirements-quark.txt
+# NOTE: amd-quark requires matching ROCm/CPU toolchain; pin per release.
+amd-quark>=0.8
+onnx>=1.16
+onnxruntime>=1.18
+numpy>=1.26
+safetensors>=0.4
+torch>=2.2

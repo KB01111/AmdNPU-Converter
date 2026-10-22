@@ -1,0 +1,75 @@
+{
+  "recipe_version": "1.0",
+  "name": "amd-xdna/npu-default",
+  "description": "Default conversion recipe for AMD XDNA NPU (Ryzen AI). Device NPU via VitisAIExecutionProvider, precision AUTO with fallback order [bf16, a16w8, a8w8], opset 17, EPContext deployment enabled, power automatic.",
+  "category": "amd-xdna",
+  "target": "amd-xdna",
+  "conversion_request": {
+    "modelId": "facebook/convnext-tiny-224",
+    "url": "https://huggingface.co/facebook/convnext-tiny-224",
+    "precision": "auto",
+    "device": "npu",
+    "powerMode": "automatic",
+    "targetEp": "vitisai",
+    "outputDir": "./artifacts/npu-default"
+  },
+  "source": {
+    "kind": "hf",
+    "trust_remote_code": false,
+    "safetensors_only": true
+  },
+  "pipeline": {
+    "stages": ["inspection", "download", "export", "optimize", "quantize", "compile", "validate", "benchmark"],
+    "opset": 17,
+    "exporter": "transformers",
+    "auto_precision_fallback_order": ["bf16", "a16w8", "a8w8"],
+    "target_shapes": {
+      "batch": 1,
+      "note": "export_hf.py emitterar opset-17-ONNX med dynamisk batch-axel; fast batch=1 specialiseras i winml optimize/compile-steget fore NPU-kompilering."
+    }
+  },
+  "quantization": {
+    "tool": "workers/quark/quantize.py",
+    "profile_flag": "--profile",
+    "calibration": {
+      "flag": "--calibration-dir",
+      "dir": "./calibration/npu-default",
+      "format": ".npz-filer, en array per ONNX-inputnamn",
+      "inputs_json_flag": "--inputs-json",
+      "max_samples_flag": "--max-samples"
+    },
+    "reference_metrics_flag": "--reference-metrics"
+  },
+  "compile": {
+    "device": "npu",
+    "execution_provider": "VitisAIExecutionProvider",
+    "winml_subcommand": "compile",
+    "ep_context": {
+      "enable": true,
+      "note": "Deployment sker som EPContext-artefakt (ORT session options ep.context_enable=1, ep.context_embed_mode=1). Appens compile-steg emitterar model.<ep>.bin via winml compile --ep vitisai."
+    },
+    "power": "automatic",
+    "cache_key": "compute_cache_key (src-tauri/src/winml/bridge.rs): sha256_hex(model_sha + NUL + config + NUL + quant + NUL + hw + NUL + ep + NUL + driver)"
+  },
+  "validation": {
+    "gate": "workers/evaluation/compare.py --max-degradation",
+    "npu_proof": "workers/evaluation/bench.py --devices npu (VitisAIExecutionProvider forstahandsval)"
+  },
+  "commands": {
+    "bootstrap": "powershell -ExecutionPolicy Bypass -File workers/bootstrap.ps1",
+    "syscheck": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py sys --output-json",
+    "inspect": "workers/.venv/Scripts/python.exe workers/hf-inspector/inspect.py --model-id facebook/convnext-tiny-224",
+    "export": "workers/.venv/Scripts/python.exe workers/exporters/transformers/export_hf.py --model-id facebook/convnext-tiny-224 --output ./artifacts/npu-default/model.onnx --opset 17 --batch 1 --seq-len 224",
+    "optimize": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py optimize -- --in ./artifacts/npu-default/model.onnx --out ./artifacts/npu-default/model.opt.onnx",
+    "quantize": "workers/.venv-quark/Scripts/python.exe workers/quark/quantize.py --input ./artifacts/npu-default/model.opt.onnx --output ./artifacts/npu-default/model.bf16.onnx --profile bf16 --calibration-dir ./calibration/npu-default --max-samples 100",
+    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --in ./artifacts/npu-default/model.bf16.onnx --out ./artifacts/npu-default/model.vitisai.bin --ep vitisai",
+    "validate": "workers/.venv/Scripts/python.exe workers/evaluation/compare.py --baseline ./artifacts/npu-default/model.opt.onnx --candidate ./artifacts/npu-default/model.bf16.onnx --eval-npz ./calibration/npu-default/eval.npz --max-degradation 0.01",
+    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/npu-default/model.vitisai.bin --devices npu --iterations 100 --warmup 10"
+  },
+  "rust": {
+    "start": "start_conversion({ req: ConversionRequest })",
+    "status": "get_job_status / list_jobs",
+    "events": "job://progress (inspection, download, export, optimize, quantize, compile, validate, benchmark)"
+  },
+  "notes": "Auto-lage: prova profilerna i fallback-ordningen; forsta profilen som passerar compare-grinden vinner. trust_remote_code=false ar hardkodat i exportern. Vid byte av Vitis AI EP- eller NPU-drivrutinsversion: rojna cache (ny cache_key)."
+}

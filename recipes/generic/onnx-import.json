@@ -1,0 +1,60 @@
+{
+  "recipe_version": "1.0",
+  "name": "generic/onnx-import",
+  "description": "ONNX-importfloode: befintlig .onnx-fil (inspector-strategi direct-onnx) -> optimize -> kvantisering -> kompilering (winml) -> validering -> verifierad NPU-korning. Ingen HF-export.",
+  "category": "generic/onnx",
+  "target": "amd-xdna",
+  "conversion_request": {
+    "modelId": "local-onnx-import",
+    "url": "",
+    "precision": "auto",
+    "device": "npu",
+    "powerMode": "automatic",
+    "targetEp": "vitisai",
+    "outputDir": "./artifacts/onnx-import"
+  },
+  "source": {
+    "kind": "onnx",
+    "onnx_path": "./downloads/model.onnx",
+    "trust_remote_code": false,
+    "safetensors_only": true,
+    "note": "Lokal fil -- ingen fjarrkod berors. torch-checkpoints (.pt/.pth/.bin) hanteras istallet av workers/exporters/generic-onnx/convert.py (--checkpoint, --arch-module/--arch-class, --optimize)."
+  },
+  "pipeline": {
+    "stages": ["inspection", "optimize", "quantize", "compile", "validate", "benchmark"],
+    "opset": 17,
+    "exporter": "direct-onnx",
+    "note": "Krav: opset 17 (AMD-rekommendation). Avvikande opset konverteras med ONNX Version Converter innan optimize-steget."
+  },
+  "quantization": {
+    "tool": "workers/quark/quantize.py",
+    "profiles": ["bf16", "a16w8", "a8w8", "int8"],
+    "calibration": {
+      "flag": "--calibration-dir (.npy/.npz)",
+      "inputs_json_flag": "--inputs-json",
+      "max_samples_flag": "--max-samples (default 64)"
+    },
+    "skip": "Hoppa over steget om modellen redan ar kvantiserad (kompilera direkt fran import-filen)."
+  },
+  "compile": {
+    "device": "npu",
+    "execution_provider": "VitisAIExecutionProvider",
+    "winml_subcommand": "compile",
+    "ep_context": { "enable": true },
+    "power": "automatic",
+    "cache_key": "compute_cache_key: sha256_hex(model_sha + NUL + config + NUL + quant + NUL + hw + NUL + ep + NUL + driver)"
+  },
+  "commands": {
+    "bootstrap": "powershell -ExecutionPolicy Bypass -File workers/bootstrap.ps1",
+    "syscheck": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py sys --output-json",
+    "optimize": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py optimize -- --in ./downloads/model.onnx --out ./artifacts/onnx-import/model.opt.onnx",
+    "quantize": "workers/.venv-quark/Scripts/python.exe workers/quark/quantize.py --input ./artifacts/onnx-import/model.opt.onnx --output ./artifacts/onnx-import/model.a8w8.onnx --profile a8w8 --calibration-dir ./calibration/onnx-import --max-samples 100",
+    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --in ./artifacts/onnx-import/model.a8w8.onnx --out ./artifacts/onnx-import/model.vitisai.bin --ep vitisai",
+    "validate": "workers/.venv/Scripts/python.exe workers/evaluation/compare.py --baseline ./artifacts/onnx-import/model.opt.onnx --candidate ./artifacts/onnx-import/model.a8w8.onnx --eval-npz ./calibration/onnx-import/eval.npz --max-degradation 0.02",
+    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/onnx-import/model.vitisai.bin --devices npu --iterations 100 --warmup 10"
+  },
+  "rust": {
+    "note": "Appens start_conversion kor full HF-pipeline; for ren ONNX-import kor stegen ovan via winml-bryggan (optimize/quantize/compile/eval/perf) och verifiera med bench --devices npu."
+  },
+  "notes": "Lagg din .onnx i downloads/ (git-ignorerad). Valj profil efter arkitektur: CNN -> a8w8, transformer -> bf16, LLM -> int8 (int4 nar worker-stod finns, se llm-int4.json)."
+}

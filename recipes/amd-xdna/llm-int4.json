@@ -1,0 +1,78 @@
+{
+  "recipe_version": "1.0",
+  "name": "amd-xdna/llm-int4",
+  "description": "LLM-rekommendation for AMD XDNA NPU: INT4 weight-only-kvantisering (AMD-rekommendation for LLM). Exempelmodell TinyLlama/TinyLlama-1.1B-Chat-v1.0, opset 17, EPContext-deployment, power automatic.",
+  "category": "amd-xdna/llm",
+  "target": "amd-xdna",
+  "support_status": "pending-worker-support",
+  "support_gap": "INT4 weight-only kraver tva enrads-tillagg: Precision-unionen i src/lib/types.ts (lagg till \"int4\") och PROFILES i workers/quark/quantize.py (lagg till \"int4\" med QConfig weight-only). Tills dess: kor receptet med precision a16w8 eller int8.",
+  "conversion_request": {
+    "modelId": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "url": "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "precision": "int4",
+    "device": "npu",
+    "powerMode": "automatic",
+    "targetEp": "vitisai",
+    "outputDir": "./artifacts/llm-int4"
+  },
+  "source": {
+    "kind": "hf",
+    "trust_remote_code": false,
+    "safetensors_only": true
+  },
+  "pipeline": {
+    "stages": ["inspection", "download", "export", "optimize", "quantize", "compile", "validate", "benchmark"],
+    "opset": 17,
+    "exporter": "transformers",
+    "target_shapes": {
+      "batch": 1,
+      "sequence": 2048,
+      "inputs": ["input_ids 1x2048", "attention_mask 1x2048"],
+      "note": "export_hf.py tar --seq-len/--batch; stora sekvenser kraver mycket RAM vid export/kompilering (>= 32 GB rekommenderas)."
+    }
+  },
+  "quantization": {
+    "tool": "workers/quark/quantize.py",
+    "profile": "int4",
+    "weight_only": true,
+    "group_size": 128,
+    "calibration": {
+      "dir": "./calibration/llm-int4",
+      "format": ".npz, en array per inputnamn (wikitext-2-raw-v1 val, representativt sample)",
+      "max_samples": 512
+    },
+    "accuracy_gate": {
+      "tool": "workers/evaluation/compare.py",
+      "max_degradation": 0.05,
+      "metric": "wikitext-2 perplexity-drift (relativ, ej procentenheter)"
+    }
+  },
+  "compile": {
+    "device": "npu",
+    "execution_provider": "VitisAIExecutionProvider",
+    "winml_subcommand": "compile",
+    "ep_context": {
+      "enable": true,
+      "note": "EPContext-artefakt for distribution (ep.context_enable=1, embed_mode=1). App-steg: winml compile --ep vitisai -> model.vitisai.bin."
+    },
+    "power": "automatic",
+    "cache_key": "compute_cache_key: sha256_hex(model_sha + NUL + config + NUL + quant + NUL + hw + NUL + ep + NUL + driver)"
+  },
+  "commands": {
+    "bootstrap": "powershell -ExecutionPolicy Bypass -File workers/bootstrap.ps1",
+    "syscheck": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py sys --output-json",
+    "inspect": "workers/.venv/Scripts/python.exe workers/hf-inspector/inspect.py --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "export": "workers/.venv/Scripts/python.exe workers/exporters/transformers/export_hf.py --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --output ./artifacts/llm-int4/model.onnx --opset 17 --batch 1 --seq-len 2048",
+    "optimize": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py optimize -- --in ./artifacts/llm-int4/model.onnx --out ./artifacts/llm-int4/model.opt.onnx",
+    "quantize": "workers/.venv-quark/Scripts/python.exe workers/quark/quantize.py --input ./artifacts/llm-int4/model.opt.onnx --output ./artifacts/llm-int4/model.int4.onnx --profile int4 --calibration-dir ./calibration/llm-int4 --max-samples 512",
+    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --in ./artifacts/llm-int4/model.int4.onnx --out ./artifacts/llm-int4/model.vitisai.bin --ep vitisai",
+    "validate": "workers/.venv/Scripts/python.exe workers/evaluation/compare.py --baseline ./artifacts/llm-int4/model.opt.onnx --candidate ./artifacts/llm-int4/model.int4.onnx --eval-npz ./calibration/llm-int4/eval.npz --max-degradation 0.05",
+    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/llm-int4/model.vitisai.bin --devices npu --iterations 50 --warmup 5"
+  },
+  "rust": {
+    "start": "start_conversion({ req: ConversionRequest })",
+    "status": "get_job_status / list_jobs",
+    "events": "job://progress (inspection, download, export, optimize, quantize, compile, validate, benchmark)"
+  },
+  "notes": "Kompilering av LLM pa NPU kan ta tiotals minuter; kompilering kan ske pa maskin utan NPU (>= 32 GB RAM). EPContext-filen ar deploymentsartefakten."
+}

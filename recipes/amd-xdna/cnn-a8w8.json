@@ -1,0 +1,73 @@
+{
+  "recipe_version": "1.0",
+  "name": "amd-xdna/cnn-a8w8",
+  "description": "CNN-rekommendation for AMD XDNA NPU: statisk INT8-kvantisering (a8w8) via AMD Quark. Exempelmodell facebook/convnext-tiny-224, opset 17, EPContext-deployment, power automatic.",
+  "category": "amd-xdna/cnn",
+  "target": "amd-xdna",
+  "conversion_request": {
+    "modelId": "facebook/convnext-tiny-224",
+    "url": "https://huggingface.co/facebook/convnext-tiny-224",
+    "precision": "a8w8",
+    "device": "npu",
+    "powerMode": "automatic",
+    "targetEp": "vitisai",
+    "outputDir": "./artifacts/cnn-a8w8"
+  },
+  "source": {
+    "kind": "hf",
+    "trust_remote_code": false,
+    "safetensors_only": true
+  },
+  "pipeline": {
+    "stages": ["inspection", "download", "export", "optimize", "quantize", "compile", "validate", "benchmark"],
+    "opset": 17,
+    "exporter": "transformers",
+    "target_shapes": {
+      "batch": 1,
+      "pixels": "1x3x224x224",
+      "note": "export_hf.py emitterar dynamisk batch-axel; batch=1 specialiseras i winml optimize/compile fore NPU."
+    }
+  },
+  "quantization": {
+    "tool": "workers/quark/quantize.py",
+    "profile": "a8w8",
+    "calibration": {
+      "dir": "./calibration/cnn-a8w8",
+      "format": ".npz, en array per inputnamn (representativa ImageNet-valbilder, INGA syntetiska inputs)",
+      "max_samples": 300
+    },
+    "accuracy_gate": {
+      "tool": "workers/evaluation/compare.py",
+      "max_degradation": 0.01,
+      "metric": "imagenet-1k top-1 (referens via --reference-metrics {\"accuracy\": ...})"
+    }
+  },
+  "compile": {
+    "device": "npu",
+    "execution_provider": "VitisAIExecutionProvider",
+    "winml_subcommand": "compile",
+    "ep_context": {
+      "enable": true,
+      "note": "EPContext-artefakt for distribution (ep.context_enable=1, embed_mode=1). App-steg: winml compile --ep vitisai -> model.vitisai.bin."
+    },
+    "power": "automatic",
+    "cache_key": "compute_cache_key: sha256_hex(model_sha + NUL + config + NUL + quant + NUL + hw + NUL + ep + NUL + driver)"
+  },
+  "commands": {
+    "bootstrap": "powershell -ExecutionPolicy Bypass -File workers/bootstrap.ps1",
+    "syscheck": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py sys --output-json",
+    "inspect": "workers/.venv/Scripts/python.exe workers/hf-inspector/inspect.py --model-id facebook/convnext-tiny-224",
+    "export": "workers/.venv/Scripts/python.exe workers/exporters/transformers/export_hf.py --model-id facebook/convnext-tiny-224 --output ./artifacts/cnn-a8w8/model.onnx --opset 17 --batch 1 --task feature-extraction",
+    "optimize": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py optimize -- --in ./artifacts/cnn-a8w8/model.onnx --out ./artifacts/cnn-a8w8/model.opt.onnx",
+    "quantize": "workers/.venv-quark/Scripts/python.exe workers/quark/quantize.py --input ./artifacts/cnn-a8w8/model.opt.onnx --output ./artifacts/cnn-a8w8/model.a8w8.onnx --profile a8w8 --calibration-dir ./calibration/cnn-a8w8 --max-samples 300",
+    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --in ./artifacts/cnn-a8w8/model.a8w8.onnx --out ./artifacts/cnn-a8w8/model.vitisai.bin --ep vitisai",
+    "validate": "workers/.venv/Scripts/python.exe workers/evaluation/compare.py --baseline ./artifacts/cnn-a8w8/model.opt.onnx --candidate ./artifacts/cnn-a8w8/model.a8w8.onnx --eval-npz ./calibration/cnn-a8w8/eval.npz --max-degradation 0.01",
+    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/cnn-a8w8/model.vitisai.bin --devices npu --iterations 100 --warmup 10"
+  },
+  "rust": {
+    "start": "start_conversion({ req: ConversionRequest })",
+    "status": "get_job_status / list_jobs",
+    "events": "job://progress (inspection, download, export, optimize, quantize, compile, validate, benchmark)"
+  },
+  "notes": "AMD-rekommendation: CNN:er kor INT8 (a8w8) pa NPU. Vid gate-fel (>1 % drift): oka kalibreringsmangd eller prova a16w8."
+}

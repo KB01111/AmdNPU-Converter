@@ -1,0 +1,63 @@
+{
+  "recipe_version": "1.0",
+  "name": "generic/hf-default",
+  "description": "Standard HF-floode: HF-modell -> export (transformers-exporter, opset 17) -> optimize -> kvantisering (Quark) -> kompilering (winml) -> validering/comparison -> NPU-benchmark. Default for generella arkitekturer.",
+  "category": "generic/hf",
+  "target": "amd-xdna",
+  "conversion_request": {
+    "modelId": "<HF_MODEL_ID>",
+    "url": "https://huggingface.co/<HF_MODEL_ID>",
+    "precision": "auto",
+    "device": "npu",
+    "powerMode": "automatic",
+    "targetEp": "vitisai",
+    "outputDir": "./artifacts/hf-default"
+  },
+  "source": {
+    "kind": "hf",
+    "trust_remote_code": false,
+    "safetensors_only": true,
+    "note": "trust_remote_code=false ar hardkodat i export_hf.py (AutoConfig/AutoModel/Tokenizer)."
+  },
+  "pipeline": {
+    "stages": ["inspection", "download", "export", "optimize", "quantize", "compile", "validate", "benchmark"],
+    "opset": 17,
+    "exporter": "transformers",
+    "auto_precision_fallback_order": ["bf16", "a16w8", "a8w8"],
+    "export_flags": "--model-id, --output, --opset 17, --batch, --seq-len, [--task auto|sequence-classification|token-classification|feature-extraction], [--token]"
+  },
+  "quantization": {
+    "tool": "workers/quark/quantize.py",
+    "profiles": ["bf16", "a16w8", "a8w8", "int8"],
+    "calibration": {
+      "flag": "--calibration-dir (.npy/.npz)",
+      "inputs_json_flag": "--inputs-json",
+      "max_samples_flag": "--max-samples (default 64)"
+    }
+  },
+  "compile": {
+    "device": "npu",
+    "execution_provider": "VitisAIExecutionProvider",
+    "winml_subcommand": "compile",
+    "ep_context": { "enable": true },
+    "power": "automatic",
+    "cache_key": "compute_cache_key: sha256_hex(model_sha + NUL + config + NUL + quant + NUL + hw + NUL + ep + NUL + driver)"
+  },
+  "commands": {
+    "bootstrap": "powershell -ExecutionPolicy Bypass -File workers/bootstrap.ps1",
+    "syscheck": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py sys --output-json",
+    "inspect": "workers/.venv/Scripts/python.exe workers/hf-inspector/inspect.py --model-id <HF_MODEL_ID>",
+    "export": "workers/.venv/Scripts/python.exe workers/exporters/transformers/export_hf.py --model-id <HF_MODEL_ID> --output ./artifacts/hf-default/model.onnx --opset 17 --batch 1 --seq-len 128",
+    "optimize": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py optimize -- --in ./artifacts/hf-default/model.onnx --out ./artifacts/hf-default/model.opt.onnx",
+    "quantize": "workers/.venv-quark/Scripts/python.exe workers/quark/quantize.py --input ./artifacts/hf-default/model.opt.onnx --output ./artifacts/hf-default/model.bf16.onnx --profile bf16 --calibration-dir ./calibration/hf-default --max-samples 100",
+    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --in ./artifacts/hf-default/model.bf16.onnx --out ./artifacts/hf-default/model.vitisai.bin --ep vitisai",
+    "validate": "workers/.venv/Scripts/python.exe workers/evaluation/compare.py --baseline ./artifacts/hf-default/model.opt.onnx --candidate ./artifacts/hf-default/model.bf16.onnx --eval-npz ./calibration/hf-default/eval.npz --max-degradation 0.02",
+    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/hf-default/model.vitisai.bin --devices npu --iterations 100 --warmup 10"
+  },
+  "rust": {
+    "start": "start_conversion({ req: ConversionRequest })",
+    "status": "get_job_status / list_jobs",
+    "events": "job://progress"
+  },
+  "notes": "Byt <HF_MODEL_ID> mot verkligt modell-ID (se tests/fixtures.md). Om arkitekturen kanns igen (cnn/transformer/llm/cua-s1) valjer appen det specifika receptet istallet (se recipes/README.md)."
+}

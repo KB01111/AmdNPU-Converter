@@ -1,0 +1,82 @@
+{
+  "recipe_version": "1.0",
+  "name": "cua-s1/forms-a16w8",
+  "description": "CUA-S1 Forms-varianten: custom-exporter cua-s1 (TinyTransformerScorer, byte-vocab 0-255), 5 inputs, ctx 224 / opt 96, a16w8-kvantisering med representativ kalibrering och accuracy-grind.",
+  "category": "cua-s1/forms",
+  "target": "amd-xdna",
+  "conversion_request": {
+    "modelId": "cua-ai/cua-s1-forms",
+    "url": "https://huggingface.co/cua-ai/cua-s1-forms",
+    "precision": "a16w8",
+    "device": "npu",
+    "powerMode": "automatic",
+    "targetEp": "vitisai",
+    "outputDir": "./artifacts/forms-a16w8"
+  },
+  "source": {
+    "kind": "hf",
+    "trust_remote_code": false,
+    "safetensors_only": true,
+    "note": "Vikter lases ALLTID via safetensors (export_cua_s1.py: safetensors.torch.load_file). Atkomst kan krava HF-token."
+  },
+  "pipeline": {
+    "stages": ["inspection", "download", "export", "optimize", "quantize", "compile", "validate", "benchmark"],
+    "opset": 17,
+    "exporter": "cua-s1",
+    "exporter_constants": {
+      "CTX_LEN": 224,
+      "OPT_LEN": 96,
+      "vocab": "byte 0-255",
+      "note": "Ctx/opt-langder ar konstanter i exportern (inga --ctx/--opt-flaggor)."
+    },
+    "inputs": [
+      { "name": "context_ids", "dtype": "int64", "shape": [1, 224], "bytes": "0-255" },
+      { "name": "context_mask", "dtype": "int64", "shape": [1, 224] },
+      { "name": "option_ids", "dtype": "int64", "shape": [1, 4, 96], "bytes": "0-255", "note": "[batch, num_options, 96] -- 3D" },
+      { "name": "option_token_mask", "dtype": "int64", "shape": [1, 4, 96] },
+      { "name": "option_mask", "dtype": "int64", "shape": [1, 4] }
+    ],
+    "output": [{ "name": "scores", "shape": [1, 4] }]
+  },
+  "quantization": {
+    "tool": "workers/quark/quantize.py",
+    "profile": "a16w8",
+    "calibration": {
+      "dir": "./calibration/forms-a16w8",
+      "format": ".npz med nycklar per inputnamn (context_ids, context_mask, option_ids, option_token_mask, option_mask); verkliga formular, INGA slumpdata",
+      "max_samples": 200
+    },
+    "accuracy_gate": {
+      "tool": "workers/evaluation/compare.py",
+      "max_degradation": 0.01,
+      "metric": "forms option-selection accuracy (referens via --reference-metrics {\"accuracy\": ...})"
+    }
+  },
+  "compile": {
+    "device": "npu",
+    "execution_provider": "VitisAIExecutionProvider",
+    "winml_subcommand": "compile",
+    "ep_context": {
+      "enable": true,
+      "note": "EPContext-artefakt for distribution (ep.context_enable=1, embed_mode=1). App-steg: winml compile --ep vitisai -> model.vitisai.bin."
+    },
+    "power": "automatic",
+    "cache_key": "compute_cache_key: sha256_hex(model_sha + NUL + config + NUL + quant + NUL + hw + NUL + ep + NUL + driver)"
+  },
+  "commands": {
+    "bootstrap": "powershell -ExecutionPolicy Bypass -File workers/bootstrap.ps1",
+    "syscheck": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py sys --output-json",
+    "inspect": "workers/.venv/Scripts/python.exe workers/hf-inspector/inspect.py --model-id cua-ai/cua-s1-forms",
+    "export": "workers/.venv/Scripts/python.exe workers/exporters/cua-s1/export_cua_s1.py --weights <path-till-model.safetensors> --config <path-till-config.json> --model-id cua-ai/cua-s1-forms --output ./artifacts/forms-a16w8/model.onnx --variant forms --opset 17",
+    "quantize": "workers/.venv-quark/Scripts/python.exe workers/quark/quantize.py --input ./artifacts/forms-a16w8/model.onnx --output ./artifacts/forms-a16w8/model.a16w8.onnx --profile a16w8 --calibration-dir ./calibration/forms-a16w8 --max-samples 200",
+    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --in ./artifacts/forms-a16w8/model.a16w8.onnx --out ./artifacts/forms-a16w8/model.vitisai.bin --ep vitisai",
+    "validate": "workers/.venv/Scripts/python.exe workers/evaluation/compare.py --baseline ./artifacts/forms-a16w8/model.onnx --candidate ./artifacts/forms-a16w8/model.a16w8.onnx --eval-npz ./calibration/forms-a16w8/eval.npz --max-degradation 0.01",
+    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/forms-a16w8/model.vitisai.bin --devices npu --iterations 100 --warmup 10"
+  },
+  "rust": {
+    "start": "start_conversion({ req: ConversionRequest })",
+    "status": "get_job_status / list_jobs",
+    "events": "job://progress (inspection, download, export, optimize, quantize, compile, validate, benchmark)"
+  },
+  "notes": "Annat num_options an 4 kraver ny export (exportern validerar [B,O,T]-formen). Byte-vocab: aldrig slumpade 0-999-ids."
+}
