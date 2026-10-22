@@ -93,10 +93,12 @@ class BenchmarkTests(unittest.TestCase):
             ['DmlExecutionProvider', 'CUDAExecutionProvider'], 'CUDAExecutionProvider'),
             ['CUDAExecutionProvider'])
 
-    def benchmark(self, devices, available, actual=None, events=None, iterations='2', ep=None, ep_devices=None):
+    def benchmark(self, devices, available, actual=None, events=None, iterations='2', ep=None, ep_devices=None, warmup='0'):
         with tempfile.TemporaryDirectory() as tmp:
             model = Path(tmp) / 'model.onnx'
             model.write_bytes(b'model')
+            self.sessions = []
+            sessions = self.sessions
             class Options:
                 def add_provider_for_devices(self, devices, options):
                     self.selected_devices = devices
@@ -106,12 +108,16 @@ class BenchmarkTests(unittest.TestCase):
                         if providers is not None or not getattr(sess_options, 'selected_devices', None):
                             raise ValueError('dynamic providers must bind device handles through SessionOptions')
                         providers = [sess_options.selected_devices[0].ep_name]
-                    self.providers = actual or providers
+                    self.providers = (actual(sess_options.enable_profiling) if callable(actual) else actual) or providers
+                    self.options = sess_options
+                    self.runs = 0
+                    sessions.append(self)
                 def get_inputs(self):
                     return [types.SimpleNamespace(name='x', shape=[1], type='tensor(float)')]
                 def get_providers(self):
                     return self.providers
                 def run(self, outputs, feed):
+                    self.runs += 1
                     return [Array([1])]
                 def end_profiling(self):
                     profile = Path(tmp) / 'profile.json'
@@ -125,10 +131,44 @@ class BenchmarkTests(unittest.TestCase):
                 ort.get_ep_devices = lambda: ep_devices
             with patch.dict(sys.modules, {'numpy': NP, 'onnxruntime': ort, 'psutil': None, 'windowsml': None}):
                 args = ['--model', str(model), '--devices', devices,
-                        '--iterations', iterations, '--warmup', '0']
+                        '--iterations', iterations, '--warmup', warmup]
                 if ep:
                     args += ['--ep', ep]
                 return invoke(self.module, args)
+
+    def test_placement_run_is_separate_from_unprofiled_warmup_and_timing(self):
+        for device, provider in [('npu', 'VitisAIExecutionProvider'), ('gpu', 'CUDAExecutionProvider')]:
+            for dynamic in (False, True):
+                handle = types.SimpleNamespace(ep_name=provider,
+                    device=types.SimpleNamespace(type=types.SimpleNamespace(name=device.upper()), metadata={}), ep_metadata={})
+                with self.subTest(device=device, dynamic=dynamic):
+                    code, rows, error = self.benchmark(device, [provider], warmup='3',
+                        ep_devices=[handle] if dynamic else None)
+                    self.assertEqual(code, 0, error)
+                    profiled, timed = self.sessions
+                    self.assertTrue(profiled.options.enable_profiling)
+                    self.assertEqual(profiled.runs, 1)
+                    self.assertFalse(timed.options.enable_profiling)
+                    self.assertEqual(timed.runs, 5)  # Three warmups and two timed iterations.
+                    self.assertEqual(profiled.providers, timed.providers)
+                    if dynamic:
+                        self.assertIs(profiled.options.selected_devices[0], handle)
+                        self.assertIs(timed.options.selected_devices[0], handle)
+                    self.assertEqual(rows[0]['iterations'], 2)
+
+    def test_cpu_timing_never_enables_profiling(self):
+        code, _, error = self.benchmark('cpu', ['CPUExecutionProvider'], warmup='3')
+        self.assertEqual(code, 0, error)
+        self.assertEqual(len(self.sessions), 1)
+        self.assertFalse(self.sessions[0].options.enable_profiling)
+        self.assertEqual(self.sessions[0].runs, 5)
+
+    def test_timing_session_fallback_invalidates_npu_verification(self):
+        code, rows, _ = self.benchmark('npu', ['VitisAIExecutionProvider'],
+            actual=lambda profiling: ['VitisAIExecutionProvider' if profiling else 'CPUExecutionProvider'])
+        self.assertNotEqual(code, 0)
+        self.assertIn('provider fallback', rows[0]['error'])
+        self.assertFalse(rows[0]['npu_verified'])
 
     def test_dynamic_npu_provider_binds_the_npu_device_handle(self):
         handle = types.SimpleNamespace(ep_name='VitisAIExecutionProvider',

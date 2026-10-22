@@ -164,22 +164,29 @@ def benchmark_model(args, ort, discovery, handles) -> int:
             try:
                 requested = providers_for(device, available, args.ep)
                 row["requested_providers"] = requested
-                options = ort.SessionOptions()
-                options.enable_profiling = device in ("npu", "gpu")
-                options.profile_file_prefix = str(Path(profile_dir) / "placement")
+                matches = None
                 if handles is not None:
                     matches = [handle for handle in handles if handle.ep_name == requested[0]
                                and device_info(handle)["device"] == device]
                     if not matches:
                         raise ValueError(f"{requested[0]} exposes no matching {device} device")
-                    options.add_provider_for_devices([matches[0]], {})
-                    sess = ort.InferenceSession(str(mp), sess_options=options)
-                else:
-                    sess = ort.InferenceSession(str(mp), providers=requested, sess_options=options)
-                actual = sess.get_providers()
-                row["providers"] = actual
-                if not actual or actual[0] != requested[0]:
-                    raise ValueError(f"provider fallback: requested {requested}, session reports {actual}")
+
+                def create_session(profiling):
+                    options = ort.SessionOptions()
+                    options.enable_profiling = profiling
+                    options.profile_file_prefix = str(Path(profile_dir) / "placement")
+                    if matches is not None:
+                        options.add_provider_for_devices([matches[0]], {})
+                        session = ort.InferenceSession(str(mp), sess_options=options)
+                    else:
+                        session = ort.InferenceSession(str(mp), providers=requested, sess_options=options)
+                    actual = session.get_providers()
+                    row["providers"] = actual
+                    if not actual or actual[0] != requested[0]:
+                        raise ValueError(f"provider fallback: requested {requested}, session reports {actual}")
+                    return session
+
+                sess = create_session(device in ("npu", "gpu"))
                 dtype_names = {"float": "float32", "float16": "float16", "double": "float64",
                                "int64": "int64", "int32": "int32", "int16": "int16",
                                "int8": "int8", "uint8": "uint8", "bool": "bool_"}
@@ -191,6 +198,21 @@ def benchmark_model(args, ort, discovery, handles) -> int:
                     shape = [d if isinstance(d, int) and d > 0 else (args.batch if i == 0 else args.seq_len)
                              for i, d in enumerate(item.shape)]
                     feed[item.name] = np.ones(shape, dtype=getattr(np, dtype_names[name]))
+                if device in ("npu", "gpu"):
+                    sess.run(None, feed)
+                    try:
+                        evidence = placement_from_profile(sess.end_profiling(), requested[0])
+                        row["placement"] = evidence
+                        row["npu_verified"] = evidence["npu_verified"] and "error" not in row
+                        if device == "gpu" and not evidence["provider_verified"]:
+                            row.setdefault("error", f"GPU node placement is not exclusive to {requested[0]}")
+                    except Exception as e:
+                        row["placement"] = {"npu_verified": False, "reason": f"profile unavailable: {e}"}
+                        if device == "gpu":
+                            row.setdefault("error", f"GPU node placement unverified: {e}")
+                    # Release the profiled session before measuring latency and memory.
+                    sess = None
+                    sess = create_session(False)
                 for _ in range(args.warmup):
                     sess.run(None, feed)
                 process = psutil.Process(os.getpid()) if psutil is not None else None
@@ -211,17 +233,7 @@ def benchmark_model(args, ort, discovery, handles) -> int:
             except Exception as e:
                 row["error"] = str(e)
             finally:
-                if sess is not None and device in ("npu", "gpu"):
-                    try:
-                        evidence = placement_from_profile(sess.end_profiling(), requested[0])
-                        row["placement"] = evidence
-                        row["npu_verified"] = evidence["npu_verified"] and "error" not in row
-                        if device == "gpu" and not evidence["provider_verified"]:
-                            row.setdefault("error", f"GPU node placement is not exclusive to {requested[0]}")
-                    except Exception as e:
-                        row["placement"] = {"npu_verified": False, "reason": f"profile unavailable: {e}"}
-                        if device == "gpu":
-                            row.setdefault("error", f"GPU node placement unverified: {e}")
+                row["npu_verified"] = row["npu_verified"] and "error" not in row
                 sess = None
         results.append(row)
     print(json.dumps(results, allow_nan=False))

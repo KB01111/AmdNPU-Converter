@@ -27,8 +27,9 @@ checks unchecked and record the missing prerequisite.
 
 ## B: Hugging Face standard
 
-- [ ] Inspect `prajjwal1/bert-tiny` or another supported safetensors text model.
-- [ ] Inspect `facebook/convnext-tiny-224` or another supported image classifier.
+- [ ] Inspect `google/bert_uncased_L-2_H-128_A-2` (safetensors verified at `30b0a37ccaaa32f332884b96992754e246e48c5f`).
+- [ ] Inspect `WinKawaks/vit-tiny-patch16-224` (safetensors verified at `77d1485af66b34d4ed0fe95dbb0c60c7496f950b`).
+- [ ] Confirm the default revision still matches the [verified checkpoint files](fixtures.md) and record the actual revision/hash used.
 - [ ] Metadata shows supported export strategy; source edits invalidate old metadata.
 - [ ] Configure representative calibration/evaluation inputs for the chosen model.
 - [ ] Safe download, correct text/image exporter, optimize, quantize and compile succeed.

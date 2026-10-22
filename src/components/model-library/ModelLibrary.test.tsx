@@ -20,6 +20,7 @@ afterEach(cleanup);
 it.each([true, false])("keeps artifact provenance when a newer same-model job failed (persisted context=%s)", async persisted => {
   vi.mocked(invoke).mockResolvedValue([{ modelId: "org/model", hfId: "org/model", arch: "transformer", params: "1M", format: "onnx", localPath: "C:/jobs/A", onnxPath: "", compiledPath: path, cacheKey: "key", createdAt: "now", jobId: persisted ? "A" : null, targetEp: persisted ? "cuda" : null }]);
   render(<QueryClientProvider client={new QueryClient()}><ModelLibrary /></QueryClientProvider>);
+  expect(screen.getByRole("table", { name: "Conversion jobs" })).toBeTruthy();
   await userEvent.click(await screen.findByRole("button", { name: "Benchmark compiled" }));
   expect(useAppStore.getState()).toMatchObject({ benchmarkPath: path, benchmarkJobId: "A", benchmarkTargetEp: "cuda" });
   await userEvent.click(screen.getByRole("button", { name: "Open conversion" }));

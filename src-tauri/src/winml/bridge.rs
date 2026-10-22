@@ -119,6 +119,8 @@ pub async fn run_worker(
     command
         .arg(script_path)
         .args(args)
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
         .env(
             "HF_HUB_OFFLINE",
             if script.starts_with("exporters/") {
@@ -163,13 +165,21 @@ async fn stream<R: tokio::io::AsyncRead + Unpin>(
     stream: &str,
     log: Option<LogCallback>,
 ) -> Result<String, ConverterError> {
-    let mut lines = BufReader::new(reader).lines();
+    let mut reader = BufReader::new(reader);
+    let mut bytes = Vec::new();
     let mut output = String::new();
-    while let Some(line) = lines.next_line().await? {
+    while reader.read_until(b'\n', &mut bytes).await? != 0 {
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+        }
+        let line = String::from_utf8_lossy(&bytes);
         // Keep subprocess diagnostics bounded even for verbose exporters.
         output.push_str(&line);
         output.push('\n');
-        if output.len() > 4 * 1024 * 1024 {
+        if output.len() > 8 * 1024 * 1024 {
             let mut cut = output.len() - 4 * 1024 * 1024;
             while !output.is_char_boundary(cut) {
                 cut += 1;
@@ -179,6 +189,7 @@ async fn stream<R: tokio::io::AsyncRead + Unpin>(
         if let Some(log) = &log {
             log(stream, &line);
         }
+        bytes.clear();
     }
     Ok(output)
 }
@@ -291,6 +302,45 @@ pub fn append_log(path: &Path, stream: &str, line: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn stream_decodes_invalid_utf8_and_preserves_line_processing() {
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let lines = captured.clone();
+        let log: LogCallback = Arc::new(move |name, line| {
+            lines
+                .lock()
+                .unwrap()
+                .push((name.to_string(), line.to_string()));
+        });
+        let input = b"first\r\n\ninvalid: \xff\nlast\r";
+        let output = stream(&input[..], "stderr", Some(log)).await.unwrap();
+        assert_eq!(output, "first\n\ninvalid: \u{fffd}\nlast\r\n");
+        assert_eq!(
+            *captured.lock().unwrap(),
+            ["first", "", "invalid: \u{fffd}", "last\r"]
+                .map(|line| ("stderr".to_string(), line.to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_trims_only_above_eight_mib_and_keeps_utf8_boundaries() {
+        const MIB: usize = 1024 * 1024;
+        // Exactly 8 MiB, including the normalized newline, must stay intact.
+        let input = "x".repeat(8 * MIB - 1);
+        assert_eq!(
+            stream(input.as_bytes(), "stdout", None)
+                .await
+                .unwrap()
+                .len(),
+            8 * MIB
+        );
+
+        let input = format!("{}\n", "é".repeat(4 * MIB));
+        let output = stream(input.as_bytes(), "stdout", None).await.unwrap();
+        assert!(output.len() <= 4 * MIB);
+        assert_eq!(output, format!("{}\n", "é".repeat(2 * MIB - 1)));
+    }
+
     #[test]
     fn environments_are_isolated() {
         let root = Path::new("C:/workers");

@@ -579,7 +579,7 @@ async fn execute_pipeline(
         .lock()
         .await
         .upsert_model(&ModelRow {
-            model_id: req.model_id.clone(),
+            model_id: format!("{}:{id}", req.model_id),
             hf_id: req.url.clone(),
             arch: metadata
                 .as_ref()

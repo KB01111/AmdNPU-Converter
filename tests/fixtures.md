@@ -10,10 +10,17 @@ support:
 
 | Model | Purpose | Input preparation |
 |---|---|---|
-| `facebook/convnext-tiny-224` | image classification export | processor-generated pixel_values; representative images for evaluation/calibration |
-| `prajjwal1/bert-tiny` | small text model export | tokenizer arrays, including every exported input |
+| `WinKawaks/vit-tiny-patch16-224` ([verified revision](https://huggingface.co/WinKawaks/vit-tiny-patch16-224/tree/77d1485af66b34d4ed0fe95dbb0c60c7496f950b)) | image classification export | processor-generated pixel_values; representative images for evaluation/calibration |
+| `google/bert_uncased_L-2_H-128_A-2` ([verified revision](https://huggingface.co/google/bert_uncased_L-2_H-128_A-2/tree/30b0a37ccaaa32f332884b96992754e246e48c5f)) | small text model export | tokenizer arrays, including every exported input |
 | `cua-ai/cua-s1-forms` | official Forms checkpoint | official collator, checkpoint-defined context/option lengths, boolean masks |
 | `cua-ai/cua-s1-nano-0.1` | official Nano text checkpoint | text checkpoint and official collator; exported wrapper uses the five context/option arrays |
+
+The standard text/image checkpoints above were checked on 2026-10-22: both
+referenced revisions provide `model.safetensors` and `config.json`, with BERT
+`vocab.txt` or ViT `preprocessor_config.json` respectively. These are file-access
+checks, not completed conversion or hardware acceptance. The app downloads the
+repository's default revision; confirm it still matches the linked revision and
+record the actual revision/hash used for acceptance.
 
 CUA requires the separately installed trusted upstream `cua_s1` implementation.
 Forms source files are `cua-s1-forms.safetensors` plus its matching JSON;
