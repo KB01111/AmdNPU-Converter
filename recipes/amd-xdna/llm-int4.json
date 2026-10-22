@@ -5,7 +5,7 @@
   "category": "amd-xdna/llm",
   "target": "amd-xdna",
   "support_status": "pending-worker-support",
-  "support_gap": "INT4 weight-only kraver tva enrads-tillagg: Precision-unionen i src/lib/types.ts (lagg till \"int4\") och PROFILES i workers/quark/quantize.py (lagg till \"int4\" med QConfig weight-only). Tills dess: kor receptet med precision a16w8 eller int8.",
+  "support_gap": "Unsupported reference recipe. INT4 requires a validated LLM export, quantization and runtime path, not an enum change. This app rejects the recipe until that support exists; use a supported model/profile recipe instead.",
   "conversion_request": {
     "modelId": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     "url": "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0",
@@ -53,7 +53,7 @@
     "winml_subcommand": "compile",
     "ep_context": {
       "enable": true,
-      "note": "EPContext-artefakt for distribution (ep.context_enable=1, embed_mode=1). App-steg: winml compile --ep vitisai -> model.vitisai.bin."
+      "note": "EPContext-artefakt for distribution (ep.context_enable=1, embed_mode=1). App-steg: winml compile --ep vitisai -> model.vitisai.onnx."
     },
     "power": "automatic",
     "cache_key": "compute_cache_key: sha256_hex(model_sha + NUL + config + NUL + quant + NUL + hw + NUL + ep + NUL + driver)"
@@ -63,14 +63,14 @@
     "syscheck": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py sys --output-json",
     "inspect": "workers/.venv/Scripts/python.exe workers/hf-inspector/inspect.py --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     "export": "workers/.venv/Scripts/python.exe workers/exporters/transformers/export_hf.py --model-id TinyLlama/TinyLlama-1.1B-Chat-v1.0 --output ./artifacts/llm-int4/model.onnx --opset 17 --batch 1 --seq-len 2048",
-    "optimize": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py optimize -- --in ./artifacts/llm-int4/model.onnx --out ./artifacts/llm-int4/model.opt.onnx",
+    "optimize": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py optimize -- --model ./artifacts/llm-int4/model.onnx --output ./artifacts/llm-int4/model.opt.onnx",
     "quantize": "workers/.venv-quark/Scripts/python.exe workers/quark/quantize.py --input ./artifacts/llm-int4/model.opt.onnx --output ./artifacts/llm-int4/model.int4.onnx --profile int4 --calibration-dir ./calibration/llm-int4 --max-samples 512",
-    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --in ./artifacts/llm-int4/model.int4.onnx --out ./artifacts/llm-int4/model.vitisai.bin --ep vitisai",
+    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --model ./artifacts/llm-int4/model.int4.onnx --output ./artifacts/llm-int4/model.vitisai.onnx --ep vitisai",
     "validate": "workers/.venv/Scripts/python.exe workers/evaluation/compare.py --baseline ./artifacts/llm-int4/model.opt.onnx --candidate ./artifacts/llm-int4/model.int4.onnx --eval-npz ./calibration/llm-int4/eval.npz --max-degradation 0.05",
-    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/llm-int4/model.vitisai.bin --devices npu --iterations 50 --warmup 5"
+    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/llm-int4/model.vitisai.onnx --devices npu --iterations 50 --warmup 5"
   },
   "rust": {
-    "start": "start_conversion({ req: ConversionRequest })",
+    "start": "start_conversion({ request: ConversionRequest })",
     "status": "get_job_status / list_jobs",
     "events": "job://progress (inspection, download, export, optimize, quantize, compile, validate, benchmark)"
   },

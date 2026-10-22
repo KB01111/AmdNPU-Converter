@@ -14,7 +14,6 @@ use uuid::Uuid;
 
 /// Handle to a running conversion job, kept in the in-memory registry.
 pub struct JobHandle {
-    pub model_id: String,
     pub cancel_flag: Arc<AtomicBool>,
 }
 
@@ -37,6 +36,8 @@ impl AppState {
 /// Called from `main.rs`.
 pub fn run() {
     let app_data = crate::models::cache::app_data_dir();
+    let _instance_lock = storage::db::acquire_instance_lock(&app_data)
+        .expect("another app instance may already own conversion jobs");
     let db = storage::db::init_db(&app_data).expect("failed to initialise SQLite database");
     let state = AppState::new(db);
 
@@ -52,9 +53,14 @@ pub fn run() {
             commands::get_job_status,
             commands::list_jobs,
             commands::cancel_job,
+            commands::retry_job,
             commands::run_benchmark,
             commands::list_models,
             commands::open_model_folder,
+            commands::list_recipes,
+            commands::load_recipe,
+            commands::save_recipe,
+            commands::export_report,
         ])
         .setup(|_app| {
             // SQLite is already initialised above (before manage).

@@ -53,6 +53,28 @@ pub struct HardwareInfo {
     pub total_memory_gb: f64,
     pub execution_providers: Vec<String>,
     pub driver_versions: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub provider_errors: Vec<String>,
+    #[serde(default)]
+    pub provider_devices: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProviderDiscovery {
+    pub providers: Vec<String>,
+    pub devices: Vec<serde_json::Value>,
+    pub errors: Vec<String>,
+}
+pub fn parse_discovery(stdout: &str) -> Result<ProviderDiscovery, ConverterError> {
+    serde_json::from_str(stdout)
+        .or_else(|original| {
+            stdout
+                .lines()
+                .rev()
+                .find_map(|line| serde_json::from_str(line).ok())
+                .ok_or(original)
+        })
+        .map_err(ConverterError::from)
 }
 
 // ---------------------------------------------------------------------------
@@ -60,7 +82,7 @@ pub struct HardwareInfo {
 // ---------------------------------------------------------------------------
 
 fn powershell_query(args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("powershell")
+    let out = background_command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command"])
         .args(args)
         .output()
@@ -73,11 +95,13 @@ fn powershell_query(args: &[&str]) -> Option<String> {
 
 fn wmi_processors() -> Vec<(String, String)> {
     // Returns (Name, DriverVersion-ish) pairs.
-    let raw = powershell_query(&[
-        "Get-CimInstance Win32_Processor | Select-Object -ExpandProperty Name",
-    ]);
+    let raw =
+        powershell_query(&["Get-CimInstance Win32_Processor | Select-Object -ExpandProperty Name"]);
     match raw {
-        Some(s) if !s.is_empty() => s.lines().map(|l| (l.trim().to_string(), String::new())).collect(),
+        Some(s) if !s.is_empty() => s
+            .lines()
+            .map(|l| (l.trim().to_string(), String::new()))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -117,10 +141,20 @@ fn wmi_video_controllers() -> Vec<GpuInfo> {
     out
 }
 
+fn is_npu_name(name: &str) -> bool {
+    let name = name.to_lowercase();
+    name.contains("xdna")
+        || name.contains("ai boost")
+        || name.contains("amd ipu")
+        || name
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == "npu")
+}
+
 fn detect_npu() -> NpuInfo {
-    // Match XDNA / NPU / AI Boost / Ryzen AI PnP devices.
+    // Signed driver records provide both the accelerator name and actual driver version.
     let raw = powershell_query(&[
-        "Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match 'XDNA|NPU|AI Boost|Ryzen AI|AMD NPU' -or $_.DeviceID -match 'XDNA|NPU' } | Select-Object Name,DriverVersion,DeviceID | ConvertTo-Json",
+        "Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceName -match 'XDNA|\\bNPU\\b|AI Boost|AMD IPU' } | Select-Object @{Name='Name';Expression={$_.DeviceName}},DriverVersion,DeviceID | ConvertTo-Json",
     ]);
     let mut present = false;
     let mut name = String::new();
@@ -133,7 +167,11 @@ fn detect_npu() -> NpuInfo {
                     serde_json::Value::Object(_) => v.clone(),
                     _ => serde_json::Value::Null,
                 };
-                if first.is_object() {
+                if first
+                    .get("Name")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(is_npu_name)
+                {
                     present = true;
                     name = first
                         .get("Name")
@@ -160,7 +198,7 @@ fn dxdiag_fallback() -> Vec<String> {
     // Best-effort: run dxdiag /t to a temp file and grep display devices.
     let tmp = std::env::temp_dir().join("npu-dxdiag.txt");
     let tmp_str = tmp.to_string_lossy().to_string();
-    let ok = std::process::Command::new("dxdiag")
+    let ok = background_command("dxdiag")
         .args(["/t", tmp_str.as_str()])
         .output()
         .map(|o| o.status.success())
@@ -182,7 +220,7 @@ fn winml_info() -> WinmlInfo {
     let available = !path.as_os_str().is_empty() && path.exists();
     let mut version = String::new();
     if available {
-        if let Ok(out) = std::process::Command::new(&path).arg("--version").output() {
+        if let Ok(out) = background_command(&path).arg("--version").output() {
             let s = format!(
                 "{}{}",
                 String::from_utf8_lossy(&out.stdout),
@@ -247,21 +285,6 @@ pub fn get_hardware_info() -> Result<HardwareInfo, ConverterError> {
         drivers.insert("npu".to_string(), npu.driver_version.clone());
     }
 
-    let mut eps = vec!["CPU".to_string(), "DML".to_string()];
-    if npu.present {
-        eps.push("VitisAI".to_string());
-        eps.push("QNN".to_string());
-    }
-    // CUDA only if an NVIDIA adapter is present.
-    if gpus.iter().any(|g| {
-        let n = format!("{} {}", g.name, g.vendor).to_lowercase();
-        n.contains("nvidia")
-    }) {
-        eps.push("CUDA".to_string());
-    }
-    eps.sort();
-    eps.dedup();
-
     Ok(HardwareInfo {
         cpu: CpuInfo {
             brand,
@@ -276,9 +299,21 @@ pub fn get_hardware_info() -> Result<HardwareInfo, ConverterError> {
         os_name,
         os_version,
         total_memory_gb: (total_gb * 100.0).round() / 100.0,
-        execution_providers: eps,
+        execution_providers: vec![],
         driver_versions: drivers,
+        provider_errors: vec![],
+        provider_devices: vec![],
     })
+}
+
+fn background_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
 }
 
 /// Validate a version string with semver (used by commands/diagnostics).
@@ -296,4 +331,29 @@ pub fn parse_driver_version(v: &str) -> Option<semver::Version> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dynamic_discovery_preserves_real_devices_and_errors() {
+        let result=super::parse_discovery(r#"{"providers":["CPUExecutionProvider","VitisAIExecutionProvider"],"devices":[{"provider":"VitisAIExecutionProvider","device":"npu","name":"AMD XDNA"}],"errors":["Other EP unavailable"],"windowsml_available":true}"#).unwrap();
+        assert_eq!(result.providers.len(), 2);
+        assert_eq!(result.devices[0]["device"], "npu");
+        assert_eq!(result.errors, vec!["Other EP unavailable"]);
+        assert!(super::parse_discovery("{}").is_err());
+    }
+    #[test]
+    fn cpu_brand_and_input_device_are_not_npus() {
+        for name in [
+            "Microsoft Input Configuration Device",
+            "AMD Ryzen AI 9 HX 370",
+            "AMD Ryzen AI CPU",
+        ] {
+            assert!(!super::is_npu_name(name), "false accelerator: {name}");
+        }
+        assert!(super::is_npu_name("AMD IPU Device"));
+        assert!(super::is_npu_name("AMD NPU"));
+        assert!(super::is_npu_name("Intel(R) AI Boost"));
+    }
 }

@@ -46,7 +46,7 @@ function New-WorkerVenv($venvPath, $requirementsFile) {
     } else {
         Write-Host "    installing base pyproject ..."
         & uv pip install --python $pipPython -e $WorkersDir
-        if (-not $?) { Write-Warning "base install failed (continuing); run manually: uv pip install -e ." }
+        if (-not $?) { throw "base worker installation failed; run: uv pip install --python $pipPython -e $WorkersDir" }
     }
 }
 

@@ -1,175 +1,77 @@
-import * as React from "react";
-import { useMutation } from "@tanstack/react-query";
-import { Loader2, Search } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { inspectHfModel } from "@/lib/tauri";
+import { Select } from "@/components/ui/select";
+import { PathInput } from "@/components/ui/path-input";
+import { inspectHfModel, isTauriRuntime, errorMessage } from "@/lib/tauri";
 import { useAppStore } from "@/stores/useAppStore";
 
-const HF_URL_RE = /^https:\/\/huggingface\.co\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/?$/;
-
-export function validateHfUrl(url: string): { owner: string; repo: string } | null {
-  const m = url.trim().match(HF_URL_RE);
-  if (!m) return null;
-  return { owner: m[1], repo: m[2] };
+export function validateHfUrl(input: string): { owner: string; repo: string } | null {
+  const path = input.trim().replace(/^\/+|\/+$/g, "").replace(/^(?:https?:\/\/)?huggingface\.co\//, "");
+  const segments = path.split("/");
+  if (segments.length < 2 || segments.some(part => !part || part === "." || part === "..") ||
+      (segments.length > 2 && !["tree", "blob", "resolve"].includes(segments[2]))) return null;
+  const [owner, repo] = segments;
+  return [owner, repo].every(part => /^[A-Za-z0-9._-]{1,96}$/.test(part)) ? { owner, repo } : null;
 }
-
 export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (!Number.isFinite(bytes) || bytes < 0) return "Unknown";
   if (bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${units[i]}`;
+  return `${(bytes / 1024 ** i).toFixed(2)} ${units[i]}`;
 }
 
 export default function HuggingFaceImport() {
-  const huggingfaceUrl = useAppStore((s) => s.huggingfaceUrl);
-  const setHuggingfaceUrl = useAppStore((s) => s.setHuggingfaceUrl);
-  const setModelMetadata = useAppStore((s) => s.setModelMetadata);
-  const modelMetadata = useAppStore((s) => s.modelMetadata);
-  const [validationError, setValidationError] = React.useState<string | null>(null);
-
-  const mutation = useMutation({
-    mutationFn: (url: string) => inspectHfModel(url),
-    onSuccess: (data) => {
-      setModelMetadata(data);
-      setValidationError(null);
-    },
-  });
-
-  const handleInspect = () => {
-    const parsed = validateHfUrl(huggingfaceUrl);
-    if (!parsed) {
-      setValidationError("URL must match https://huggingface.co/<owner>/<repo>");
-      return;
-    }
-    setValidationError(null);
-    mutation.mutate(huggingfaceUrl.trim());
-  };
-
-  return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Import from Hugging Face</CardTitle>
-          <CardDescription>
-            Paste a model URL, e.g. https://huggingface.co/microsoft/Phi-3-mini-4k-instruct
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex gap-2">
-            <Input
-              value={huggingfaceUrl}
-              onChange={(e) => setHuggingfaceUrl(e.target.value)}
-              placeholder="https://huggingface.co/<owner>/<repo>"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleInspect();
-              }}
-            />
-            <Button onClick={handleInspect} disabled={mutation.isPending || !huggingfaceUrl.trim()}>
-              {mutation.isPending ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Search className="h-4 w-4" />
-              )}
-              Inspect
-            </Button>
+  const s = useAppStore();
+  const [pendingRevision, setPendingRevision] = useState<number | null>(null);
+  const [failure, setFailure] = useState<{ revision: number; message: string } | null>(null);
+  const pending = pendingRevision === s.sourceRevision;
+  const error = failure?.revision === s.sourceRevision ? failure.message : null;
+  async function inspect() {
+    const current = useAppStore.getState();
+    const parsed = validateHfUrl(current.huggingfaceUrl);
+    if (!parsed) { setFailure({ revision: current.sourceRevision, message: "Enter owner/model or https://huggingface.co/owner/model." }); return; }
+    const revision = current.sourceRevision;
+    setPendingRevision(revision); setFailure(null);
+    try { const metadata = await inspectHfModel(`${parsed.owner}/${parsed.repo}`); current.acceptInspection(revision, metadata); }
+    catch (error) { setFailure({ revision, message: errorMessage(error) }); }
+    finally { setPendingRevision(previous => previous === revision ? null : previous); }
+  }
+  function preset(modelId: string) {
+    s.setSourceKind("hf"); s.setHuggingfaceUrl(modelId);
+    s.updateSettings({ precision: modelId.endsWith("forms") ? "a16w8" : "bf16", device: "npu", targetEp: "vitisai", powerMode: "automatic" });
+  }
+  return <Card>
+    <CardHeader><CardTitle>Import model</CardTitle><CardDescription>Inspect a Hugging Face model or convert an existing local ONNX file.</CardDescription></CardHeader>
+    <CardContent className="space-y-4">
+      <div className="max-w-sm space-y-1.5"><label htmlFor="source-kind" className="text-sm font-medium">Model source</label>
+        <Select id="source-kind" value={s.sourceKind} onValueChange={value => s.setSourceKind(value as "hf" | "onnx")} options={[{ value: "hf", label: "Hugging Face" }, { value: "onnx", label: "Local ONNX" }]} />
+      </div>
+      {s.sourceKind === "hf" ? <>
+        <div className="space-y-1.5"><label htmlFor="hf-source" className="text-sm font-medium">Hugging Face model ID or URL</label>
+          <div className="flex flex-col gap-2 sm:flex-row"><Input id="hf-source" value={s.huggingfaceUrl} onChange={e => s.setHuggingfaceUrl(e.target.value)} placeholder="owner/model" onKeyDown={e => { if (e.key === "Enter" && !pending) void inspect(); }} />
+            <Button onClick={() => void inspect()} disabled={!isTauriRuntime() || pending || !s.huggingfaceUrl.trim()}>{pending ? "Inspecting…" : "Inspect"}</Button>
           </div>
-          {validationError && (
-            <Alert variant="destructive">
-              <AlertTitle>Invalid URL</AlertTitle>
-              <AlertDescription>{validationError}</AlertDescription>
-            </Alert>
-          )}
-          {mutation.isError && (
-            <Alert variant="destructive">
-              <AlertTitle>Inspection failed</AlertTitle>
-              <AlertDescription>
-                {mutation.error instanceof Error ? mutation.error.message : String(mutation.error)}
-              </AlertDescription>
-            </Alert>
-          )}
-        </CardContent>
-      </Card>
-
-      {modelMetadata && (
-        <Card>
-          <CardHeader>
-            <CardTitle>{modelMetadata.modelId}</CardTitle>
-            <CardDescription>Metadata returned by hf_inspect</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-3">
-              <div>
-                <div className="text-muted-foreground">Architecture</div>
-                <div className="font-medium">{modelMetadata.arch}</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">Parameters</div>
-                <div className="font-medium">
-                  {modelMetadata.paramsHuman} ({modelMetadata.params.toLocaleString()})
-                </div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">Format</div>
-                <div className="font-medium">{modelMetadata.format}</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">License</div>
-                <div className="font-medium">{modelMetadata.license ?? "unknown"}</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">Total size</div>
-                <div className="font-medium">{formatBytes(modelMetadata.totalSizeBytes)}</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">Files</div>
-                <div className="font-medium">{modelMetadata.files.length}</div>
-              </div>
-            </div>
-
-            {modelMetadata.safetensors && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Badge variant="secondary">
-                  safetensors: {modelMetadata.safetensors.numTensors} tensors
-                </Badge>
-                {modelMetadata.safetensors.dtype && (
-                  <Badge variant="outline">{modelMetadata.safetensors.dtype}</Badge>
-                )}
-                <Badge variant="outline">
-                  {modelMetadata.safetensors.totalParams.toLocaleString()} params
-                </Badge>
-              </div>
-            )}
-
-            <div className="mt-4 overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b text-muted-foreground">
-                    <th className="py-2 pr-4 font-medium">File</th>
-                    <th className="py-2 pr-4 font-medium">Size</th>
-                    <th className="py-2 font-medium">SHA-256</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {modelMetadata.files.map((f) => (
-                    <tr key={f.name} className="border-b last:border-0">
-                      <td className="py-1.5 pr-4 font-mono text-xs">{f.name}</td>
-                      <td className="py-1.5 pr-4">{formatBytes(f.sizeBytes)}</td>
-                      <td className="py-1.5 font-mono text-xs text-muted-foreground">
-                        {f.sha256 ? `${f.sha256.slice(0, 16)}…` : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-    </div>
-  );
+        </div>
+        <div className="flex flex-wrap items-center gap-2"><span className="text-sm text-muted-foreground">CUA-S1 presets</span>
+          <Button variant="outline" size="sm" onClick={() => preset("cua-ai/cua-s1-nano-0.1")}>Nano text · BF16</Button>
+          <Button variant="outline" size="sm" onClick={() => preset("cua-ai/cua-s1-forms")}>Forms · A16W8</Button>
+        </div>
+        <p className="text-xs text-muted-foreground">CUA-S1 uses its dedicated exporter. Model access and representative evaluation inputs are required.</p>
+      </> : <>
+        <PathInput label="Local ONNX path" value={s.onnxPath} onChange={s.setOnnxPath} extension="onnx" onError={message => setFailure({ revision: s.sourceRevision, message })} />
+        <div className="space-y-1.5"><label htmlFor="local-model-id" className="text-sm font-medium">Local model name</label><Input id="local-model-id" value={s.localModelId} onChange={e => s.setLocalModelId(e.target.value)} /></div>
+        <p className="text-xs text-muted-foreground">The pipeline validates ONNX and prepares opset 17 before optimization. The original file is retained.</p>
+      </>}
+      {pending && <p role="status" className="text-sm text-muted-foreground">Inspecting model metadata…</p>}
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      {s.modelMetadata && <div className="space-y-3 rounded-md border p-3 text-sm">
+        <h3 className="font-semibold break-all">{s.modelMetadata.modelId}</h3>
+        <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">{[["Architecture", s.modelMetadata.arch], ["Parameters", s.modelMetadata.params], ["Format", s.modelMetadata.format], ["Estimated size", formatBytes(s.modelMetadata.estimatedBytes)], ["License", s.modelMetadata.license], ["Export", s.modelMetadata.compat.exportStrategy], ["Opset", s.modelMetadata.compat.opset], ["Inputs", s.modelMetadata.inputTypes.join(", ")]].map(([label, value]) => <div key={label}><dt className="text-muted-foreground">{label}</dt><dd className="break-words">{value || "Unknown"}</dd></div>)}</dl>
+        <details><summary className="cursor-pointer">Model files ({s.modelMetadata.files.length})</summary><ul className="mt-2 max-h-48 overflow-auto font-mono text-xs">{s.modelMetadata.files.map(file => <li key={file.rfilename} className="break-all py-1">{file.rfilename}{file.size != null ? ` · ${formatBytes(file.size)}` : ""}</li>)}</ul></details>
+      </div>}
+    </CardContent>
+  </Card>;
 }

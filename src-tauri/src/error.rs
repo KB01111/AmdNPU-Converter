@@ -5,6 +5,8 @@ use thiserror::Error;
 /// so the frontend always receives a readable message.
 #[derive(Debug, Error)]
 pub enum ConverterError {
+    #[error("Cancelled after worker termination")]
+    Cancelled,
     #[error("database error: {0}")]
     Db(String),
 

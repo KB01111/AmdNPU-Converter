@@ -1,291 +1,115 @@
-"""CUA-S1 Forms 706K TinyTransformerScorer -> ONNX.
+"""Export local CUA Forms/tinyx or Nano text checkpoints using official safe loaders.
 
-Model: byte-level (vocab 0-255) tiny transformer scorer.
-Forward: (context_ids, context_mask, option_ids, option_token_mask, option_mask) -> scores [B, O]
-
-Weights: ALWAYS loaded from safetensors via safetensors.torch.load_file and
-mapped strictly into the module state_dict. Official loader tried first:
-    from cua_s1.model import TinyTransformerScorer
-fallback: local minimal mirror (byte-embedding + transformer + option-attention).
-
-Shapes: ctx 224 / opt 96 fixed (+ padded variant flag for dynamic export).
-Byte vocab 0-255 (never random 0-999).
-
-    python workers/exporters/cua-s1/export_cua_s1.py --weights model.safetensors --config config.json --output cua_s1.onnx --variant forms
+Requires the separately installed cua_s1 package from the trusted upstream source.
+The official loaders verify safetensors signatures, config, and named tensor keys.
+No pickle, remote model code, invented architecture, or shape-based remapping.
 """
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
-import sys
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import validate_onnx
 
 
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(description="Export CUA-S1 TinyTransformerScorer to ONNX.")
-    p.add_argument("--weights", required=True, help="Path to .safetensors (or HF repo id)")
-    p.add_argument("--config", default=None, help="Path to config.json (or HF repo id file)")
-    p.add_argument("--model-id", default=None, help="HF repo id fallback for weights/config")
-    p.add_argument("--output", required=True, help="Output .onnx path")
-    p.add_argument("--variant", default="forms", choices=["forms", "nano-text"])
-    p.add_argument("--opset", type=int, default=17)
-    p.add_argument("--token", default=None)
-    return p.parse_args(argv)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--weights", required=True, help="Local safetensors checkpoint")
+    parser.add_argument("--config", help="Matching local checkpoint JSON")
+    parser.add_argument("--model-id", help="Source provenance (download using download.py first)")
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--variant", default="forms", choices=["forms", "nano-text"])
+    parser.add_argument("--opset", type=int, default=17)
+    parser.add_argument("--token", default=None)
+    return parser.parse_args(argv)
 
 
-CTX_LEN = 224
-OPT_LEN = 96
-
-
-def load_raw_state(weights: str, model_id: str | None, token=None) -> dict:
-    from safetensors.torch import load_file
-    from huggingface_hub import hf_hub_download
-
-    p = Path(weights)
-    if p.exists():
-        return load_file(str(p), device="cpu")
-    # treat as repo file name or repo id
-    repo = model_id or weights
-    fname = "model.safetensors"
-    local = hf_hub_download(repo_id=repo, filename=fname, token=token)
-    return load_file(local, device="cpu")
-
-
-def load_cfg_dict(config: str | None, model_id: str | None, token=None) -> dict:
-    from huggingface_hub import hf_hub_download
-
-    if config:
-        cp = Path(config)
-        if cp.exists():
-            with open(cp, "r", encoding="utf-8") as f:
-                return json.load(f)
-        # config may be a repo id
-        try:
-            local = hf_hub_download(repo_id=config, filename="config.json", token=token)
-            with open(local, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    if model_id:
-        try:
-            local = hf_hub_download(repo_id=model_id, filename="config.json", token=token)
-            with open(local, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            print(json.dumps({"warning": f"config fetch failed: {e}"}), file=sys.stderr)
-    return {}
-
-
-def build_model(cfg: dict):
-    """Try official loader, else local minimal mirror. Returns torch.nn.Module."""
-    import torch
-    import torch.nn as nn
-
-    # 1) official
+def load_official_checkpoint(weights: str, config: str | None, variant: str):
+    path = Path(weights).resolve()
+    config_path = Path(config).resolve() if config else path.with_suffix(".json")
+    if path.suffix != ".safetensors" or not path.is_file() or not config_path.is_file():
+        raise ValueError("existing local safetensors weights and matching checkpoint JSON required")
+    if config_path == path.with_suffix(".json"):
+        location = path
+    elif path.name == "model.safetensors" and config_path == path.parent / "config.json":
+        location = path.parent
+    else:
+        raise ValueError("checkpoint pair must share a stem, or use model.safetensors plus config.json")
     try:
-        from cua_s1.model import TinyTransformerScorer  # type: ignore
-        try:
-            return TinyTransformerScorer(cfg) if isinstance(cfg, dict) and cfg else TinyTransformerScorer()
-        except TypeError:
-            return TinyTransformerScorer()
-    except Exception as e:
-        print(json.dumps({"warning": f"official cua_s1 loader unavailable ({e}); using local mirror"}),
-              file=sys.stderr)
-
-    # 2) local minimal mirror: byte-embedding + transformer + option-attention
-    d_model = int(cfg.get("hidden_size", cfg.get("d_model", 128)))
-    n_layer = int(cfg.get("num_hidden_layers", cfg.get("n_layer", 4)))
-    n_head = int(cfg.get("num_attention_heads", cfg.get("n_head", 4)))
-    d_ff = int(cfg.get("intermediate_size", cfg.get("d_ff", 4 * d_model)))
-    n_options_max = int(cfg.get("num_options", 8))
-
-    class TinyMirror(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.byte_emb = nn.Embedding(256, d_model)
-            layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_head,
-                                               dim_feedforward=d_ff, batch_first=True)
-            self.encoder = nn.TransformerEncoder(layer, num_layers=n_layer)
-            self.opt_emb = nn.Embedding(256, d_model)
-            self.opt_encoder = nn.TransformerEncoder(layer, num_layers=max(1, n_layer // 2))
-            self.attn = nn.MultiheadAttention(d_model, n_head, batch_first=True)
-            self.scorer = nn.Linear(d_model, 1)
-
-        def forward(self, context_ids, context_mask, option_ids, option_token_mask, option_mask):
-            # context_ids: [B, C] byte ids; option_ids: [B, O, T]
-            B, C = context_ids.shape
-            Bo, O, T = option_ids.shape
-            assert B == Bo, "batch mismatch context vs options"
-            ctx = self.byte_emb(torch.clamp(context_ids, 0, 255).long())
-            key_pad = (context_mask == 0) if context_mask is not None else None
-            ctx_enc = self.encoder(ctx, src_key_padding_mask=key_pad)  # [B,C,D]
-            ctx_vec = ctx_enc.mean(dim=1)  # [B,D]
-            opt = self.opt_emb(torch.clamp(option_ids, 0, 255).long())  # [B,O,T,D]
-            flat = opt.reshape(B * O, T, -1)
-            flat_mask = option_token_mask.reshape(B * O, T) if option_token_mask is not None else None
-            flat_pad = (flat_mask == 0) if flat_mask is not None else None
-            flat_enc = self.opt_encoder(flat, src_key_padding_mask=flat_pad)
-            opt_vec = flat_enc.mean(dim=1).reshape(B, O, -1)  # [B,O,D]
-            q = ctx_vec.unsqueeze(1)  # [B,1,D]
-            attn_out, _ = self.attn(q, opt_vec, opt_vec,
-                                    key_padding_mask=(option_mask == 0) if option_mask is not None else None)
-            scores = self.scorer(attn_out).squeeze(-1)  # [B,O]
-            if option_mask is not None:
-                scores = scores.masked_fill(option_mask == 0, float("-inf"))
-            return scores
-
-    m = TinyMirror()
-    m._mirror_cfg = {"d_model": d_model, "n_layer": n_layer, "n_head": n_head,  # type: ignore
-                     "d_ff": d_ff, "n_options_max": n_options_max}
-    return m
-
-
-def strict_load(module, state: dict) -> None:
-    import torch
-    missing, unexpected = [], []
-    try:
-        res = module.load_state_dict(state, strict=False)
-        missing = list(getattr(res, "missing_keys", []))
-        unexpected = list(getattr(res, "unexpected_keys", []))
-    except Exception as e:
-        print(json.dumps({"error": f"state_dict load failed: {e}"}), file=sys.stderr)
-        raise
-    # Honest strictness: if official loader matched fully, great; if mirror, map by shape-order
-    if missing and unexpected:
-        # attempt shape-ordered mapping: sort both by numel and assign
-        own = dict(module.state_dict())
-        s_items = sorted(state.items(), key=lambda kv: kv[1].numel() if hasattr(kv[1], "numel") else -1)
-        o_items = sorted(own.items(), key=lambda kv: kv[1].numel())
-        mapped = {}
-        si = 0
-        for oname, oten in o_items:
-            while si < len(s_items):
-                sname, sten = s_items[si]
-                si += 1
-                try:
-                    import torch as _t
-                    arr = sten if isinstance(sten, _t.Tensor) else _t.as_tensor(sten)
-                except Exception:
-                    continue
-                if tuple(arr.shape) == tuple(oten.shape):
-                    mapped[oname] = arr
-                    break
-            else:
-                break
-        if len(mapped) == len(own):
-            module.load_state_dict(mapped, strict=True)
-            print(json.dumps({"info": f"shape-ordered strict mapping applied ({len(mapped)} tensors)"}),
-                  file=sys.stderr)
-            return
-        print(json.dumps({"error": "weight mismatch",
-                          "missing": missing[:20], "unexpected": unexpected[:20]}), file=sys.stderr)
-        raise RuntimeError("strict weight mapping failed (see missing/unexpected keys)")
-    elif missing or unexpected:
-        print(json.dumps({"warning": "partial weight match", "missing": missing[:20],
-                          "unexpected": unexpected[:20]}), file=sys.stderr)
+        if variant == "forms":
+            from cua_s1.model import load_checkpoint
+        elif variant == "nano-text":
+            from cua_s1.nano import load_nano_checkpoint as load_checkpoint
+        else:
+            raise ValueError(f"unsupported CUA variant: {variant}")
+    except ImportError as e:
+        raise RuntimeError("install the trusted official cua_s1 source package in the base worker environment") from e
+    model, _collator, cfg = load_checkpoint(location, device="cpu")
+    return model, cfg
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    outp = Path(args.output)
-    outp.parent.mkdir(parents=True, exist_ok=True)
-
+    output = Path(args.output)
     try:
+        if output.exists() or args.opset < 1:
+            raise ValueError("a new output path and positive opset required")
         import torch
+        model, cfg = load_official_checkpoint(args.weights, args.config, args.variant)
+        model.eval()
+        lengths = [cfg.get("context_tokens"), cfg.get("option_tokens")]
+        if any(not isinstance(n, int) or isinstance(n, bool) or n <= 0 for n in lengths):
+            raise ValueError("official checkpoint must declare positive context_tokens/option_tokens")
+        context_length, option_length = lengths
+        inputs = {
+            "context_ids": torch.ones(1, context_length, dtype=torch.long),
+            "context_mask": torch.ones(1, context_length, dtype=torch.bool),
+            "option_ids": torch.ones(1, 4, option_length, dtype=torch.long),
+            "option_token_mask": torch.ones(1, 4, option_length, dtype=torch.bool),
+            "option_mask": torch.ones(1, 4, dtype=torch.bool),
+        }
+        # CUA byte IDs are UTF-8 bytes + 1 (1..256); zero is reserved padding.
+        class Wrapper(torch.nn.Module):
+            def __init__(self, inner):
+                super().__init__()
+                self.inner = inner
+
+            def forward(self, context_ids, context_mask, option_ids, option_token_mask, option_mask):
+                batch = {"context_ids": context_ids, "option_ids": option_ids,
+                         "option_token_mask": option_token_mask, "option_mask": option_mask}
+                if args.variant == "nano-text":
+                    batch.update(context_token_mask=context_mask, modality="text")
+                else:
+                    batch["context_mask"] = context_mask
+                return self.inner(batch)
+
+        wrapped = Wrapper(model).eval()
+        if hasattr(torch.backends, "mha"):
+            torch.backends.mha.set_fastpath_enabled(False)
+        with torch.no_grad():
+            reference = wrapped(*inputs.values())
+        axes = {name: {0: "batch"} for name in inputs}
+        for name in ("option_ids", "option_token_mask", "option_mask"):
+            axes[name][1] = "num_options"
+        axes["scores"] = {0: "batch", 1: "num_options"}
+        output.parent.mkdir(parents=True, exist_ok=True)
+        options = {"dynamo": False} if "dynamo" in inspect.signature(torch.onnx.export).parameters else {}
+        torch.onnx.export(wrapped, tuple(inputs.values()), str(output), input_names=list(inputs),
+                          output_names=["scores"], dynamic_axes=axes, opset_version=args.opset,
+                          do_constant_folding=True, **options)
+        report = validate_onnx(str(output), inputs, torch_outputs=reference)
+        comparison = report.get("numeric_compare")
+        passed = (report.get("ort_run") == "ok" and isinstance(comparison, list) and
+                  bool(comparison) and all(item.get("allclose") is True for item in comparison))
+        report.update(output=str(output), variant=args.variant, validation_passed=passed)
+        print(json.dumps(report, allow_nan=False))
+        return 0 if passed else 1
     except Exception as e:
-        print(json.dumps({"error": f"torch not installed: {e}"}), file=sys.stderr)
-        return 1
-
-    cfg = load_cfg_dict(args.config, args.model_id or args.config, args.token)
-    if args.variant == "nano-text" and "ctx_len" not in cfg:
-        cfg = dict(cfg)
-
-    try:
-        raw = load_raw_state(args.weights, args.model_id, args.token)
-    except Exception as e:
-        print(json.dumps({"error": f"weight load failed: {e}"}), file=sys.stderr)
-        return 1
-    # safetensors returns tensors already; ensure torch tensors
-    state = {k: (v if isinstance(v, torch.Tensor) else torch.as_tensor(v)) for k, v in raw.items()}
-
-    try:
-        module = build_model(cfg)
-        module.eval()
-        strict_load(module, state)
-        module.eval()
-    except Exception as e:
-        print(json.dumps({"error": f"model build/load failed: {e}"}), file=sys.stderr)
-        return 1
-
-    # Example inputs: byte vocab 0-255 only (deterministic arange pattern)
-    B, O = 1, 4
-    C, T = CTX_LEN, OPT_LEN
-    context_ids = (torch.arange(C).unsqueeze(0).repeat(B, 1) % 256).long()
-    context_mask = torch.ones(B, C, dtype=torch.long)
-    option_ids = (torch.arange(O * T).reshape(1, O, T) % 256).long()
-    option_token_mask = torch.ones(B, O, T, dtype=torch.long)
-    option_mask = torch.ones(B, O, dtype=torch.long)
-
-    class Wrapper(torch.nn.Module):
-        def __init__(self, m):
-            super().__init__()
-            self.m = m
-
-        def forward(self, context_ids, context_mask, option_ids, option_token_mask, option_mask):
-            return self.m(context_ids, context_mask, option_ids, option_token_mask, option_mask)
-
-    wrapped = Wrapper(module).eval()
-    with torch.no_grad():
-        ref = wrapped(context_ids, context_mask, option_ids, option_token_mask, option_mask)
-
-    dynamic_axes = {
-        "context_ids": {0: "batch"},
-        "context_mask": {0: "batch"},
-        "option_ids": {0: "batch", 1: "num_options"},
-        "option_token_mask": {0: "batch", 1: "num_options"},
-        "option_mask": {0: "batch", 1: "num_options"},
-        "scores": {0: "batch", 1: "num_options"},
-    }
-    try:
-        torch.onnx.export(
-            wrapped,
-            (context_ids, context_mask, option_ids, option_token_mask, option_mask),
-            str(outp),
-            input_names=["context_ids", "context_mask", "option_ids", "option_token_mask", "option_mask"],
-            output_names=["scores"],
-            dynamic_axes=dynamic_axes,
-            opset_version=args.opset,
-            do_constant_folding=True,
-        )
-    except Exception as e:
-        print(json.dumps({"error": f"torch.onnx.export failed: {e}"}), file=sys.stderr)
-        return 1
-
-    # ORT numeric validation
-    try:
-        import numpy as _np
-        import onnxruntime as ort
-        import onnx
-        onnx.checker.check_model(str(outp))
-        sess = ort.InferenceSession(str(outp), providers=["CPUExecutionProvider"])
-        outs = sess.run(None, {
-            "context_ids": context_ids.numpy(),
-            "context_mask": context_mask.numpy(),
-            "option_ids": option_ids.numpy(),
-            "option_token_mask": option_token_mask.numpy(),
-            "option_mask": option_mask.numpy(),
-        })
-        oo = _np.asarray(outs[0], dtype=_np.float64)
-        rr = ref.detach().cpu().numpy().astype(_np.float64)
-        rep = {"output": str(outp), "variant": args.variant,
-               "output_shape": list(oo.shape),
-               "max_abs_diff": float(_np.max(_np.abs(rr - oo))) if rr.shape == oo.shape else None,
-               "allclose": bool(_np.allclose(rr, oo, rtol=1e-3, atol=1e-4)) if rr.shape == oo.shape else False,
-               "ort_inputs": [{"name": i.name} for i in sess.get_inputs()]}
-        print(json.dumps(rep))
-        return 0 if rep["allclose"] else 1
-    except Exception as e:
-        print(json.dumps({"error": f"ORT validation failed: {e}"}), file=sys.stderr)
+        print(json.dumps({"error": f"CUA export failed: {e}"}), file=sys.stderr)
         return 1
 
 

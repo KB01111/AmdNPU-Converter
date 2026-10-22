@@ -11,7 +11,7 @@
     "device": "npu",
     "powerMode": "automatic",
     "targetEp": "vitisai",
-    "outputDir": "./artifacts/cnn-a8w8"
+    "outputDir": null
   },
   "source": {
     "kind": "hf",
@@ -19,7 +19,16 @@
     "safetensors_only": true
   },
   "pipeline": {
-    "stages": ["inspection", "download", "export", "optimize", "quantize", "compile", "validate", "benchmark"],
+    "stages": [
+      "inspection",
+      "download",
+      "export",
+      "optimize",
+      "quantize",
+      "validate",
+      "compile",
+      "benchmark"
+    ],
     "opset": 17,
     "exporter": "transformers",
     "target_shapes": {
@@ -32,14 +41,13 @@
     "tool": "workers/quark/quantize.py",
     "profile": "a8w8",
     "calibration": {
-      "dir": "./calibration/cnn-a8w8",
       "format": ".npz, en array per inputnamn (representativa ImageNet-valbilder, INGA syntetiska inputs)",
       "max_samples": 300
     },
     "accuracy_gate": {
       "tool": "workers/evaluation/compare.py",
       "max_degradation": 0.01,
-      "metric": "imagenet-1k top-1 (referens via --reference-metrics {\"accuracy\": ...})"
+      "metric": "relative mean absolute output drift on supplied evaluation NPZ arrays"
     }
   },
   "compile": {
@@ -48,7 +56,7 @@
     "winml_subcommand": "compile",
     "ep_context": {
       "enable": true,
-      "note": "EPContext-artefakt for distribution (ep.context_enable=1, embed_mode=1). App-steg: winml compile --ep vitisai -> model.vitisai.bin."
+      "note": "EPContext-artefakt for distribution (ep.context_enable=1, embed_mode=1). App-steg: winml compile --ep vitisai -> model.vitisai.onnx."
     },
     "power": "automatic",
     "cache_key": "compute_cache_key: sha256_hex(model_sha + NUL + config + NUL + quant + NUL + hw + NUL + ep + NUL + driver)"
@@ -58,14 +66,14 @@
     "syscheck": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py sys --output-json",
     "inspect": "workers/.venv/Scripts/python.exe workers/hf-inspector/inspect.py --model-id facebook/convnext-tiny-224",
     "export": "workers/.venv/Scripts/python.exe workers/exporters/transformers/export_hf.py --model-id facebook/convnext-tiny-224 --output ./artifacts/cnn-a8w8/model.onnx --opset 17 --batch 1 --task feature-extraction",
-    "optimize": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py optimize -- --in ./artifacts/cnn-a8w8/model.onnx --out ./artifacts/cnn-a8w8/model.opt.onnx",
+    "optimize": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py optimize -- --model ./artifacts/cnn-a8w8/model.onnx --output ./artifacts/cnn-a8w8/model.opt.onnx",
     "quantize": "workers/.venv-quark/Scripts/python.exe workers/quark/quantize.py --input ./artifacts/cnn-a8w8/model.opt.onnx --output ./artifacts/cnn-a8w8/model.a8w8.onnx --profile a8w8 --calibration-dir ./calibration/cnn-a8w8 --max-samples 300",
-    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --in ./artifacts/cnn-a8w8/model.a8w8.onnx --out ./artifacts/cnn-a8w8/model.vitisai.bin --ep vitisai",
+    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --model ./artifacts/cnn-a8w8/model.a8w8.onnx --output ./artifacts/cnn-a8w8/model.vitisai.onnx --ep vitisai",
     "validate": "workers/.venv/Scripts/python.exe workers/evaluation/compare.py --baseline ./artifacts/cnn-a8w8/model.opt.onnx --candidate ./artifacts/cnn-a8w8/model.a8w8.onnx --eval-npz ./calibration/cnn-a8w8/eval.npz --max-degradation 0.01",
-    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/cnn-a8w8/model.vitisai.bin --devices npu --iterations 100 --warmup 10"
+    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/cnn-a8w8/model.vitisai.onnx --devices npu --iterations 100 --warmup 10"
   },
   "rust": {
-    "start": "start_conversion({ req: ConversionRequest })",
+    "start": "start_conversion({ request: ConversionRequest })",
     "status": "get_job_status / list_jobs",
     "events": "job://progress (inspection, download, export, optimize, quantize, compile, validate, benchmark)"
   },

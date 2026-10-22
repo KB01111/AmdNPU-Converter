@@ -1,187 +1,30 @@
 import { useQuery } from "@tanstack/react-query";
-import { Cpu, CircuitBoard, Zap, RefreshCw, Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Select } from "@/components/ui/select";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { getHardware } from "@/lib/tauri";
+import { errorMessage, getHardware, isTauriRuntime } from "@/lib/tauri";
 import { useAppStore } from "@/stores/useAppStore";
-import type { PowerMode } from "@/lib/types";
 
 export default function HardwareDashboard() {
-  const hardwareInfo = useAppStore((s) => s.hardwareInfo);
-  const setHardwareInfo = useAppStore((s) => s.setHardwareInfo);
-  const powerMode = useAppStore((s) => s.powerMode);
-  const setPowerMode = useAppStore((s) => s.setPowerMode);
-
-  const query = useQuery({
-    queryKey: ["hardware"],
-    queryFn: async () => {
-      const info = await getHardware();
-      setHardwareInfo(info);
-      if (info.powerMode) setPowerMode(info.powerMode);
-      return info;
-    },
-    staleTime: 30_000,
-    retry: 1,
-  });
-
-  const info = query.data ?? hardwareInfo;
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Hardware dashboard</h2>
-        <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
-          {query.isFetching ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-          Refresh
-        </Button>
+  const hardware = useAppStore(s => s.hardwareInfo);
+  const query = useQuery({ queryKey: ["hardware"], enabled: isTauriRuntime(), retry: false, staleTime: 30000,
+    queryFn: async () => { const info = await getHardware(); useAppStore.getState().setHardwareInfo(info); return info; } });
+  const info = query.data ?? hardware;
+  return <div className="space-y-4">
+    <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-semibold">Hardware dashboard</h2><Button variant="outline" onClick={() => void query.refetch()} disabled={!isTauriRuntime() || query.isFetching}>{query.isFetching ? "Refreshing…" : "Refresh"}</Button></div>
+    {query.isFetching && !info && <p role="status" className="text-sm">Reading hardware and provider information…</p>}
+    {query.isError && <p role="alert" className="text-sm text-destructive">Failed to read hardware: {errorMessage(query.error)}</p>}
+    {!info && !query.isFetching && <p className="text-sm text-muted-foreground">No hardware data yet. Open the desktop app and refresh to check local prerequisites.</p>}
+    {info && <>
+      {!!info.providerErrors?.length && <div role="alert" className="rounded-md border p-3 text-sm"><h3 className="font-semibold">Provider setup needs attention</h3>{info.providerErrors.map((message, index) => <p key={index} className="mt-1 whitespace-pre-wrap break-words">{message}</p>)}</div>}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Card><CardHeader><CardTitle>CPU</CardTitle></CardHeader><CardContent className="space-y-1 text-sm"><p className="font-medium">{info.cpu.brand}</p><p>{info.cpu.physicalCores} physical / {info.cpu.logicalCores} logical cores · {info.cpu.frequencyMhz} MHz</p><p className="text-muted-foreground">{info.cpu.vendor} · {info.totalMemoryGb.toFixed(1)} GB memory</p><p>{info.osName} {info.osVersion}</p></CardContent></Card>
+        <Card><CardHeader><CardTitle>GPU</CardTitle></CardHeader><CardContent className="space-y-3 text-sm">{info.gpus.length ? info.gpus.map((gpu, index) => <div key={`${gpu.name}-${index}`}><p className="font-medium">{gpu.name}</p><p className="text-muted-foreground">{gpu.vendor} · driver {gpu.driverVersion || "unknown"}</p></div>) : <p>No GPU reported.</p>}</CardContent></Card>
+        <Card><CardHeader><CardTitle>NPU</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><p>{info.npu.name || "No NPU reported"}</p><Badge variant={info.npu.present ? "secondary" : "warning"}>{info.npu.present ? "Detected" : "Not detected"}</Badge><p>Driver: {info.npu.driverVersion || "Unknown"}</p><p className="text-muted-foreground">Detection alone does not establish NPU execution or model compatibility.</p></CardContent></Card>
+        <Card><CardHeader><CardTitle>WinML</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><Badge variant={info.winml.available ? "secondary" : "warning"}>{info.winml.available ? "Available" : "Unavailable"}</Badge><p>Version: {info.winml.version || "Unknown"}</p><p className="break-all font-mono text-xs">{info.winml.binaryPath || "No WinML executable found"}</p></CardContent></Card>
       </div>
-
-      {query.isError && (
-        <Alert variant="destructive">
-          <AlertTitle>Failed to read hardware</AlertTitle>
-          <AlertDescription>
-            {query.error instanceof Error ? query.error.message : String(query.error)}
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {!info && !query.isFetching && (
-        <Alert>
-          <AlertTitle>No hardware data</AlertTitle>
-          <AlertDescription>
-            Press Refresh to call get_hardware_info on the Rust backend.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {info && (
-        <>
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  <Cpu className="h-4 w-4" /> CPU
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm">
-                <div className="font-medium">{info.cpu.name}</div>
-                <div className="text-muted-foreground">
-                  {info.cpu.cores} cores / {info.cpu.threads} threads
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  <CircuitBoard className="h-4 w-4" /> GPU
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm">
-                {info.gpus.length === 0 && (
-                  <span className="text-muted-foreground">No GPU reported</span>
-                )}
-                {info.gpus.map((g) => (
-                  <div key={g.name} className="mb-1">
-                    <div className="font-medium">{g.name}</div>
-                    {g.vendor && <div className="text-muted-foreground">{g.vendor}</div>}
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  <Zap className="h-4 w-4" /> NPU
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm">
-                {info.npu ? (
-                  <>
-                    <div className="font-medium">{info.npu.name}</div>
-                    <Badge variant={info.npu.available ? "success" : "destructive"} className="mt-1">
-                      {info.npu.available ? "available" : "unavailable"}
-                    </Badge>
-                    {info.npu.tops != null && (
-                      <div className="mt-1 text-muted-foreground">{info.npu.tops} TOPS</div>
-                    )}
-                  </>
-                ) : (
-                  <span className="text-muted-foreground">No NPU reported</span>
-                )}
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Execution providers</CardTitle>
-              </CardHeader>
-              <CardContent className="flex flex-wrap gap-1.5">
-                {info.executionProviders.length === 0 && (
-                  <span className="text-sm text-muted-foreground">None</span>
-                )}
-                {info.executionProviders.map((ep) => (
-                  <Badge key={ep} variant="secondary">
-                    {ep}
-                  </Badge>
-                ))}
-              </CardContent>
-            </Card>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Drivers</CardTitle>
-                <CardDescription>Driver stack reported by the backend.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <table className="w-full text-left text-sm">
-                  <thead>
-                    <tr className="border-b text-muted-foreground">
-                      <th className="py-1 pr-3 font-medium">Name</th>
-                      <th className="py-1 pr-3 font-medium">Version</th>
-                      <th className="py-1 font-medium">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {info.drivers.map((d) => (
-                      <tr key={d.name} className="border-b last:border-0">
-                        <td className="py-1.5 pr-3">{d.name}</td>
-                        <td className="py-1.5 pr-3 font-mono text-xs">{d.version}</td>
-                        <td className="py-1.5">
-                          <Badge variant="outline">{d.status}</Badge>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Power mode</CardTitle>
-                <CardDescription>Stored in app state and sent with conversions.</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <Select
-                  value={powerMode}
-                  onValueChange={(v) => setPowerMode(v as PowerMode)}
-                  options={[
-                    { value: "automatic", label: "Automatic" },
-                    { value: "max-performance", label: "Max performance" },
-                    { value: "battery-efficient", label: "Battery efficient" },
-                  ]}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Backend reports: {info.powerMode}. Changing this updates the conversion request.
-                </p>
-              </CardContent>
-            </Card>
-          </div>
-        </>
-      )}
-    </div>
-  );
+      <Card><CardHeader><CardTitle>Execution providers and drivers</CardTitle><CardDescription>Providers available to the local runtime. Availability does not prove node placement.</CardDescription></CardHeader><CardContent className="space-y-4"><div className="flex flex-wrap gap-2">{info.executionProviders.length ? info.executionProviders.map(provider => <Badge key={provider} variant="outline">{provider}</Badge>) : <p className="text-sm">No execution providers reported. Check the Python worker environment.</p>}</div><dl className="grid gap-2 text-sm sm:grid-cols-2">{Object.entries(info.driverVersions).map(([name, version]) => <div key={name}><dt className="font-medium">{name}</dt><dd className="break-all text-muted-foreground">{version || "Unknown"}</dd></div>)}</dl></CardContent></Card>
+      <Card><CardHeader><CardTitle>Setup readiness</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><p>{info.npu.present && info.winml.available ? "Hardware and WinML detected. Conversion still checks the selected provider, Python worker environments and representative datasets." : "Complete the missing prerequisites before attempting an NPU conversion."}</p>{!info.npu.present && <p>Install the supported Ryzen AI NPU driver and verify that Windows detects the device.</p>}{!info.winml.available && <p>Install WinML and configure its executable using the project setup instructions.</p>}<p>Follow README setup to bootstrap the separate exporter, Quark and WinML worker environments. Refresh after installing prerequisites.</p></CardContent></Card>
+    </>}
+  </div>;
 }

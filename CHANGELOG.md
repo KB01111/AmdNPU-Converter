@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Local ONNX import, CUA-S1 presets, calibration/evaluation settings, native
+  file selection, and versioned recipe load/save controls.
+- Job cancellation/retry/restart recovery, persistent diagnostics and artifacts,
+  benchmark reports, and library navigation/artifact actions.
+- Regression coverage for UI/native contracts, worker gates, and job lifecycle;
+  CI executes behavior tests in addition to compilation.
+
+### Fixed
+
+- Frontend/Rust command arguments and metadata/hardware/job/model/benchmark
+  response contracts, including partial progress/log/error events.
+- Missing safe HF download and ONNX preparation workers; real exporter,
+  quantization, evaluation, and WinML CLI routing.
+- Silent accelerator fallback, false NPU verification, unsafe CUA-S1 weight
+  matching, and acceptance of missing/nonfinite evaluation data.
+- Worker/recipe resource packaging, frontend build/dev hooks, keyboard controls,
+  reduced-motion behavior, and desktop/runtime guidance.
+
 ## [0.1.0] - 2026-10-22
 
 ### Added

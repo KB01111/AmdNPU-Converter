@@ -42,7 +42,13 @@ pub fn cache_key(parts: &[&str]) -> String {
 pub fn model_dir(model_id: &str) -> PathBuf {
     let safe: String = model_id
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     models_dir().join(safe)
 }
