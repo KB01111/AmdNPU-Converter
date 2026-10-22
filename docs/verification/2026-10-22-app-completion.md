@@ -18,7 +18,7 @@ and dynamic provider selection were also corrected and covered by fixtures.
 | Check | Result | Acceptance boundary |
 |---|---|---|
 | `npm test` | 19 passed in five files | frontend contracts/state/component behavior |
-| `npx playwright test` | 6 passed, serial installed Edge | explicit browser native fixtures; no page errors |
+| `npx playwright test` | 6 passed in serial installed Edge and CI-mode Chromium | explicit browser native fixtures; no page errors |
 | `npm run build` | passed | TypeScript and Vite; entry bundle about 241 kB vs baseline 549 kB |
 | `cargo test --locked --manifest-path src-tauri/Cargo.toml` | 27 passed, no ignored tests | serde/routing/storage plus real lightweight Windows process-tree tests |
 | `cargo check` and `cargo fmt` | passed | native compilation/formatting |
@@ -51,3 +51,8 @@ be recreated according to workers/README.md.
 
 Hosted CI is recorded on the pull request after publication; local checks alone
 do not establish a hosted result.
+
+The first hosted UI run caught a test-selector race: a broad final Benchmark
+button locator could select main navigation before the asynchronous model
+actions loaded. The test now waits for the exact Benchmark compiled action;
+all six cases passed locally in CI-mode Chromium after this correction.

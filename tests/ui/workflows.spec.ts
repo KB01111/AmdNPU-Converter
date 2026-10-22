@@ -65,7 +65,7 @@ test("ONNX import skips HF inspection and library artifacts populate benchmark",
   expect(calls.some(call => call.command === "hf_inspect")).toBe(false);
   expect(calls.find(call => call.command === "start_conversion")?.args).toMatchObject({request: {sourceKind: "onnx", onnxPath: "C:\\fixture\\source.onnx"}});
   await page.getByRole("button", {name: "Library", exact: true}).click();
-  await page.getByRole("button", {name: /benchmark/i}).last().click();
+  await page.getByRole("button", {name: "Benchmark compiled", exact: true}).click();
   await expect(page.getByRole("textbox", {name: "Model artifact path", exact: true})).toHaveValue(/model\..*onnx$/);
 });
 
