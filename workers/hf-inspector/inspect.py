@@ -219,8 +219,10 @@ def main(argv=None) -> int:
     # Counts come only from explicit config metadata; inspection never downloads weights.
     if config:
         for key in ('num_parameters', 'n_params', 'total_params'):
-            if isinstance(config.get(key), (int, float)) and config[key] > 0:
-                parameter_count = int(config[key])
+            value = config.get(key)
+            # Bound metadata to the native u64 contract before converting floats.
+            if type(value) in (int, float) and 0 < value <= 2**64 - 1:
+                parameter_count = int(value)
                 break
 
     if not architecture:

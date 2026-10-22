@@ -8,8 +8,12 @@ import { inspectHfModel, isTauriRuntime, errorMessage } from "@/lib/tauri";
 import { useAppStore } from "@/stores/useAppStore";
 
 export function validateHfUrl(input: string): { owner: string; repo: string } | null {
-  const match = input.trim().match(/^(?:https:\/\/huggingface\.co\/)?([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/?$/);
-  return match ? { owner: match[1], repo: match[2] } : null;
+  const path = input.trim().replace(/^\/+|\/+$/g, "").replace(/^(?:https?:\/\/)?huggingface\.co\//, "");
+  const segments = path.split("/");
+  if (segments.length < 2 || segments.some(part => !part || part === "." || part === "..") ||
+      (segments.length > 2 && !["tree", "blob", "resolve"].includes(segments[2]))) return null;
+  const [owner, repo] = segments;
+  return [owner, repo].every(part => /^[A-Za-z0-9._-]{1,96}$/.test(part)) ? { owner, repo } : null;
 }
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "Unknown";

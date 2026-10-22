@@ -45,6 +45,7 @@ For local ONNX set `sourceKind: "onnx"`, `onnxPath` to the source graph, and
 an identifying `modelId`; HF URL can be empty. The app also understands shipped
 recipes' `source.kind` and `source.onnx_path`. The evaluation NPZ must contain
 every input array. Calibration is required for calibrated integer profiles.
+Auto precision selects BF16; it does not retry other profiles automatically.
 
 Save/load uses native dialogs. Loading validates data and populates controls;
 starting performs the additional checks against local files/dependencies.

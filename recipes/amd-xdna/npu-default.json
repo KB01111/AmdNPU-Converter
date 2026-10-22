@@ -1,7 +1,7 @@
 {
   "recipe_version": "1.0",
   "name": "amd-xdna/npu-default",
-  "description": "Default conversion recipe for AMD XDNA NPU (Ryzen AI). Device NPU via VitisAIExecutionProvider, precision AUTO with fallback order [bf16, a16w8, a8w8], opset 17, EPContext deployment enabled, power automatic.",
+  "description": "Default conversion recipe for AMD XDNA NPU (Ryzen AI). Device NPU via VitisAIExecutionProvider, precision AUTO resolves to BF16, opset 17, EPContext deployment enabled, power automatic.",
   "category": "amd-xdna",
   "target": "amd-xdna",
   "conversion_request": {
@@ -31,11 +31,7 @@
     ],
     "opset": 17,
     "exporter": "transformers",
-    "auto_precision_fallback_order": [
-      "bf16",
-      "a16w8",
-      "a8w8"
-    ],
+    "auto_precision": "bf16",
     "target_shapes": {
       "batch": 1,
       "note": "export_hf.py emitterar opset-17-ONNX med dynamisk batch-axel; fast batch=1 specialiseras i winml optimize/compile-steget fore NPU-kompilering."
@@ -83,5 +79,5 @@
     "status": "get_job_status / list_jobs",
     "events": "job://progress (inspection, download, export, optimize, quantize, compile, validate, benchmark)"
   },
-  "notes": "Auto-lage: prova profilerna i fallback-ordningen; forsta profilen som passerar compare-grinden vinner. trust_remote_code=false ar hardkodat i exportern. Vid byte av Vitis AI EP- eller NPU-drivrutinsversion: rojna cache (ny cache_key)."
+  "notes": "Auto selects BF16. To use A16W8 or A8W8, select that profile and supply representative calibration data. trust_remote_code=false is enforced by the exporter. Driver/provider changes require a new compilation cache key."
 }

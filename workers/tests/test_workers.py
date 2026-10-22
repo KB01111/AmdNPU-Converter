@@ -523,6 +523,23 @@ class ExportSafetyTests(unittest.TestCase):
 
 
 class InspectionTests(unittest.TestCase):
+    def test_invalid_parameter_metadata_falls_back_to_valid_count(self):
+        module = load('hf-inspector/inspect.py')
+        for invalid in ('1e999', '-1e999', 'NaN', 'true', str(10 ** 400)):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as tmp:
+                config = Path(tmp) / 'config.json'
+                config.write_text('{"num_parameters":' + invalid + ',"n_params":1234}', encoding='utf-8')
+                class Api:
+                    def __init__(self, **kwargs): pass
+                    def model_info(self, **kwargs): return types.SimpleNamespace()
+                    def list_repo_files(self, **kwargs): return ['config.json']
+                hub = types.SimpleNamespace(HfApi=Api, hf_hub_download=lambda **kwargs: str(config))
+                errors = types.SimpleNamespace(HfHubHTTPError=RuntimeError, RepositoryNotFoundError=FileNotFoundError)
+                with patch.dict(sys.modules, {'huggingface_hub': hub, 'huggingface_hub.utils': errors}):
+                    code, report, _ = invoke(module, ['--model-id', 'org/model'])
+                self.assertEqual(code, 0)
+                self.assertEqual(report['parameter_count'], 1234)
+
     def test_official_cua_sidecar_routes_to_cua_exporter(self):
         module = load('hf-inspector/inspect.py')
         with tempfile.TemporaryDirectory() as tmp:

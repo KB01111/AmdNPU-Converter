@@ -32,11 +32,7 @@
     ],
     "opset": 17,
     "exporter": "transformers",
-    "auto_precision_fallback_order": [
-      "bf16",
-      "a16w8",
-      "a8w8"
-    ],
+    "auto_precision": "bf16",
     "export_flags": "--model-id, --output, --opset 17, --batch, --seq-len, [--task auto|sequence-classification|token-classification|feature-extraction], [--token]"
   },
   "quantization": {

@@ -17,15 +17,15 @@ and dynamic provider selection were also corrected and covered by fixtures.
 
 | Check | Result | Acceptance boundary |
 |---|---|---|
-| `npm test` | 19 passed in five files | frontend contracts/state/component behavior |
+| `npm test` | 23 passed in five files | frontend contracts/state/component behavior |
 | `npx playwright test` | 6 passed in serial installed Edge and CI-mode Chromium | explicit browser native fixtures; no page errors |
 | `npm run build` | passed | TypeScript and Vite; entry bundle about 241 kB vs baseline 549 kB |
 | `cargo test --locked --manifest-path src-tauri/Cargo.toml` | 27 passed, no ignored tests | serde/routing/storage plus real lightweight Windows process-tree tests |
 | `cargo check` and `cargo fmt` | passed | native compilation/formatting |
-| Python 3.11 unittest discovery | 38 passed | external ML SDKs are explicit fakes |
+| Python 3.11 unittest discovery | 39 passed | external ML SDKs are explicit fakes |
 | Python 3.11 compileall | passed | syntax |
 | `npm audit --omit=dev` | zero production advisories | full audit retains seven existing Tailwind v3 development-tree advisories |
-| `npm run tauri -- build --debug --bundles nsis` | passed | native debug executable and 6.06 MiB NSIS installer built |
+| `npm run tauri -- build --debug --bundles nsis` | passed | native debug executable and 6.07 MiB NSIS installer built |
 | Bundled resources | 25 files matched source hashes | includes Python/scripts/setup data and recipes, excludes virtual environments |
 
 The built native executable was launched and observed through the Windows UI.
@@ -56,3 +56,8 @@ The first hosted UI run caught a test-selector race: a broad final Benchmark
 button locator could select main navigation before the asynchronous model
 actions loaded. The test now waits for the exact Benchmark compiled action;
 all six cases passed locally in CI-mode Chromium after this correction.
+
+Hosted review also exposed HF suffix-link validation mismatches and overflowing
+parameter metadata. Added regressions cover canonical recipe saves for HF
+tree/blob/resolve links, invalid path rejection, and invalid parameter counts.
+Two historical recipe annotations now accurately state that Auto selects BF16.
