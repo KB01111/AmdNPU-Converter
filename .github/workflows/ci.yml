@@ -14,7 +14,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Setup Rust
@@ -31,9 +31,21 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Check Rust backend
+      - name: Test frontend contracts and state
+        run: npm test
+
+      - name: Install browser for UI fixtures
+        run: npx playwright install chromium
+
+      - name: Test UI workflows with native fixtures
+        run: npx playwright test
+
+      - name: Test Rust backend
         working-directory: src-tauri
-        run: cargo check
+        run: cargo test
+
+      - name: Test Python worker behavior
+        run: python -m unittest discover -s workers/tests -v
 
       - name: Compile Python workers
-        run: Get-ChildItem -Path workers -Filter *.py -Recurse | ForEach-Object { python -m py_compile $_.FullName }
+        run: python -m compileall -q workers

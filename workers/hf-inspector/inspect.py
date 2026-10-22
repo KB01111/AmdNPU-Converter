@@ -100,13 +100,19 @@ def _pick_export_strategy(arch: str, siblings: list[str]) -> str:
 def _inputs_hint(arch: str, config: dict) -> dict:
     arch_l = (arch or "").lower()
     if "cua" in arch_l or "tinytransformer" in arch_l:
+        context = config.get("context_tokens", 224)
+        option = config.get("option_tokens", 96)
         return {
-            "context_ids": "[batch, 224] int64 bytes 0-255",
-            "context_mask": "[batch, 224] int64",
-            "option_ids": "[batch, num_options, 96] int64 bytes 0-255",
-            "option_token_mask": "[batch, num_options, 96] int64",
-            "option_mask": "[batch, num_options] int64",
+            "context_ids": f"[batch, {context}] int64 UTF-8 bytes + 1 (zero padding)",
+            "context_mask": f"[batch, {context}] bool",
+            "option_ids": f"[batch, num_options, {option}] int64 UTF-8 bytes + 1 (zero padding)",
+            "option_token_mask": f"[batch, num_options, {option}] bool",
+            "option_mask": "[batch, num_options] bool",
         }
+    if "imageclassification" in arch_l:
+        size = config.get("image_size", 224)
+        channels = config.get("num_channels", 3)
+        return {"pixel_values": f"[batch, {channels}, {size}, {size}] float32; preprocess with image processor"}
     seq_len = config.get("max_position_embeddings") or config.get("n_positions") or 512
     return {
         "input_ids": f"[batch, sequence] int64 (sequence~{seq_len})",
@@ -175,13 +181,19 @@ def main(argv=None) -> int:
     fmt = "unknown"
     config: dict = {}
 
-    # 1) try config.json (cheap, no weights)
-    if "config.json" in siblings:
+    # Only checkpoint JSON is fetched; model inspection never fetches tensors.
+    cua_configs = {"cua-ai/cua-s1-forms": "cua-s1-forms.json", "cua-ai/cua-s1-nano-0.1": "text/config.json"}
+    config_file = cua_configs.get(model_id, "config.json")
+    if model_id in cua_configs:
+        architecture = "CuaS1NanoText" if "nano" in model_id else "CuaS1Forms"
+    if config_file in siblings:
         try:
-            cfg_path = hf_hub_download(repo_id=model_id, filename="config.json",
+            cfg_path = hf_hub_download(repo_id=model_id, filename=config_file,
                                        revision=args.revision, token=token)
             with open(cfg_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
+            if model_id in cua_configs:
+                config = config.get("config", config)
             archs = config.get("architectures")
             if isinstance(archs, list) and archs:
                 architecture = str(archs[0])
@@ -204,46 +216,9 @@ def main(argv=None) -> int:
     else:
         fmt = "unknown"
 
-    index_file = None
-    for cand in ("model.safetensors.index.json", "pytorch_model.safetensors.index.json"):
-        if cand in siblings:
-            index_file = cand
-            break
-    if index_file:
-        try:
-            idx_path = hf_hub_download(repo_id=model_id, filename=index_file,
-                                       revision=args.revision, token=token)
-            with open(idx_path, "r", encoding="utf-8") as f:
-                idx = json.load(f)
-            parameter_count = _safe_int((idx.get("metadata") or {}).get("total_size"), 0)
-            # total_size in index is bytes, not params; try weight_map shapes? fall back below
-            if parameter_count > 10_000_000_000:
-                # looks like bytes; keep as bytes hint, reset params to 0 for header pass
-                parameter_count = 0
-        except Exception as e:
-            print(json.dumps({"warning": f"safetensors index fetch failed: {e}"}), file=sys.stderr)
-
-    # 3) single-shard safetensors header (first 8-byte LE length + JSON header)
-    if parameter_count == 0 and has_safetensors:
-        shard = next((s for s in siblings if s.lower().endswith(".safetensors")), None)
-        if shard:
-            try:
-                import struct
-                local = hf_hub_download(repo_id=model_id, filename=shard,
-                                        revision=args.revision, token=token)
-                with open(local, "rb") as f:
-                    raw = f.read(8)
-                    if len(raw) == 8:
-                        (hlen,) = struct.unpack("<Q", raw)
-                        if 0 < hlen < 100 * 1024 * 1024:
-                            header = json.loads(f.read(hlen).decode("utf-8"))
-                            parameter_count = _param_count_from_safetensors_header(header)
-            except Exception as e:
-                print(json.dumps({"warning": f"safetensors header read failed: {e}"}), file=sys.stderr)
-
-    # 4) fallback: config-based estimate (num_parameters field or hidden math)
-    if parameter_count == 0 and config:
-        for key in ("num_parameters", "n_params", "total_params"):
+    # Counts come only from explicit config metadata; inspection never downloads weights.
+    if config:
+        for key in ('num_parameters', 'n_params', 'total_params'):
             if isinstance(config.get(key), (int, float)) and config[key] > 0:
                 parameter_count = int(config[key])
                 break

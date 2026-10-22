@@ -1,55 +1,61 @@
-# E2E-conversion — manuell checklista
+# Native conversion acceptance checklist
 
-Kor dessa 3 floden manuellt pa en Ryzen AI-maskin (Win11 + NPU-drivrutin).
-**Definition of done per flode:** modellen ar **exporterad + validerad +
-kompilerad + verifierad pa NPU** (alla fyra, i ordning). Bocka av varje steg.
+These checks require real model access, representative data, the external ML
+environments, and matching NPU drivers/providers. Browser fixtures, successful
+compilation, and provider enumeration are separate evidence. Leave unavailable
+checks unchecked and record the missing prerequisite.
 
-Forberedelser (gemensamt):
-- [ ] `powershell -ExecutionPolicy Bypass -File workers/bootstrap.ps1` gar utan fel
-      (skapar `workers/.venv`, `.venv-winml`, `.venv-quark`; Python 3.11 + uv kravs)
-- [ ] `workers/.venv-winml/Scripts/python.exe workers/winml/run.py sys --output-json`
-      rapporterar NPU + Vitis AI EP
-- [ ] `npm install` + `npm run tauri dev` startar appen; `get_hardware_info` visar NPU
+## Setup
 
-Pipeline-referens (Rust `STEPS`): `inspection, download, export, optimize,
-quantize, compile, validate, benchmark` — event `job://progress`.
+- [ ] Python 3.11 worker bootstrap finishes without failures.
+- [ ] WinML CLI is discoverable (`WINML_BIN`, environment, or PATH).
+- [ ] AMD Quark and an actual VitisAI/NPU ORT provider are available.
+- [ ] Native app starts through `npm run tauri dev` without a separately started Vite.
+- [ ] Installed build resolves bundled workers/recipes from a different cwd.
+- [ ] Hardware page shows the actual accelerator and drivers, without treating CPU names as NPUs.
+- [ ] Evaluation NPZ includes all model inputs and representative examples.
 
----
+## A: Local ONNX
 
-## Flode A — ONNX-import -> compile (recept `recipes/generic/onnx-import.json`)
+- [ ] Select local ONNX import and an existing source graph.
+- [ ] Choose supported precision/provider, evaluation file, calibration if needed, and output root.
+- [ ] Start: HF download/export are skipped; source graph is not overwritten.
+- [ ] ONNX checks/opset preparation, optimization, quantization, compile, and numeric gate succeed.
+- [ ] EPContext wrapper and sidecars are present in the per-job output directory.
+- [ ] Benchmark records actual NPU execution-profile evidence without fallback nodes.
+- [ ] Library opens the correct output folder and populates the benchmark path.
 
-1. [ ] Lagg test-ONNX i `downloads/` (t.ex. exporterad `convnext-tiny-224`, opset 17)
-2. [ ] Appen: valj **ONNX-import**, peka pa filen (inspector-strategi `direct-onnx`)
-3. [ ] **Exporterad/fardig import:** `winml/run.py optimize -- --in ./downloads/model.onnx --out ./artifacts/onnx-import/model.opt.onnx`
-4. [ ] **Kvantiserad:** `quark/quantize.py --input model.opt.onnx --output model.<profil>.onnx --profile <bf16|a16w8|a8w8|int8> --calibration-dir ./calibration/onnx-import --max-samples 100` (onnx.checker + ORT CPU-load OK i rapporten)
-5. [ ] **Kompilerad:** `winml/run.py compile -- --in model.<profil>.onnx --out model.vitisai.bin --ep vitisai`
-6. [ ] **Validerad:** `evaluation/compare.py --baseline model.opt.onnx --candidate model.<profil>.onnx --eval-npz ./calibration/onnx-import/eval.npz --max-degradation <troskel>` exit 0
-7. [ ] **Verifierad NPU-korning:** `evaluation/bench.py --model model.vitisai.bin --devices npu ...` visar NPU-provider (VitisAIExecutionProvider), ingen tyst CPU-fallback
+## B: Hugging Face standard
 
-## Flode B — HF-standard -> build (recept `recipes/generic/hf-default.json`)
+- [ ] Inspect `prajjwal1/bert-tiny` or another supported safetensors text model.
+- [ ] Inspect `facebook/convnext-tiny-224` or another supported image classifier.
+- [ ] Metadata shows supported export strategy; source edits invalidate old metadata.
+- [ ] Configure representative calibration/evaluation inputs for the chosen model.
+- [ ] Safe download, correct text/image exporter, optimize, quantize and compile succeed.
+- [ ] Numeric gate passes on supplied data, with actual threshold/output drift retained.
+- [ ] NPU benchmark has execution-profile evidence; GPU or CPU execution cannot pass as NPU.
 
-1. [ ] Appen: valj **HF-standard**, ange `facebook/convnext-tiny-224` (alternativ `prajjwal1/bert-tiny`, se `tests/fixtures.md`); `hf_inspect` visar metadata + strategi `transformers`
-2. [ ] **Exporterad:** `exporters/transformers/export_hf.py --model-id <id> --output ./artifacts/hf-default/model.onnx --opset 17 --batch 1 --seq-len 128` (ort_run=ok; trust_remote_code=false hardkodat)
-3. [ ] **Kvantiserad + kompilerad:** optimize -> `quantize.py --profile <profil>` -> `winml/run.py compile -- --ep vitisai` ger `model.vitisai.bin`
-4. [ ] **Validerad:** `compare.py --max-degradation <troskel>` exit 0
-5. [ ] **Verifierad NPU-korning:** `bench.py --devices npu` OK; folj jobbet via `get_job_status`/`job://progress`
-6. [ ] (Valfritt) **Save as Recipe** -> `recipes/custom/<namn>.json`, ladda om, kor om
+## C: CUA-S1
 
-## Flode C — CUA-S1 Forms -> custom export (recept `recipes/cua-s1/forms-a16w8.json`)
+- [ ] Official `cua_s1` model implementation is installed locally.
+- [ ] Forms/nano-text model safetensors match the official model strictly.
+- [ ] Choose preset and representative model-specific calibration/evaluation data.
+- [ ] Correct variant exports; Forms exposes its five expected inputs and scores output.
+- [ ] Quantize/compile/evaluate succeed; NPU benchmark has placement evidence.
+- [ ] Missing official implementation or mismatched weights fail clearly without substitute graphs.
 
-1. [ ] Appen: valj **CUA-S1 Forms**, ange `cua-ai/cua-s1-forms` (HF-token vid behov)
-2. [ ] Recept `cua-s1/forms-a16w8` autovaljs (strategi `cua-s1`); kontrollera **5 inputs** i exportrapporten: `context_ids [1,224]`, `context_mask [1,224]`, `option_ids [1,4,96]`, `option_token_mask [1,4,96]`, `option_mask [1,4]` -> `scores [1,4]`
-3. [ ] **Exporterad:** `exporters/cua-s1/export_cua_s1.py --weights <model.safetensors> --config <config.json> --model-id cua-ai/cua-s1-forms --output ./artifacts/forms-a16w8/model.onnx --variant forms --opset 17` (allclose=true; vikter endast via safetensors)
-4. [ ] **Kvantiserad (a16w8):** `quantize.py --input model.onnx --output model.a16w8.onnx --profile a16w8 --calibration-dir ./calibration/forms-a16w8 --max-samples 200` (representativa formular-`.npz`, en nyckel per inputnamn)
-5. [ ] **Kompilerad:** `winml/run.py compile -- --in model.a16w8.onnx --out model.vitisai.bin --ep vitisai`
-6. [ ] **Validerad + verifierad:** `compare.py --max-degradation 0.01` exit 0, `bench.py --devices npu` visar NPU-korning
+## Lifecycle and error paths
 
----
+- [ ] Save/load a recipe preserves source/configuration and does not execute its command strings.
+- [ ] Unsupported INT4, invalid paths, invalid numeric bounds and provider/device conflicts are rejected.
+- [ ] Missing worker dependencies and missing accelerator produce actionable errors.
+- [ ] Cancel during an active worker: child execution stops before terminal cancelled is shown.
+- [ ] Retry creates a new job/output directory from persisted settings.
+- [ ] Restart interrupts orphaned jobs; completed jobs and errors remain intact.
+- [ ] Missing evaluation NPZ, missing input keys, output mismatches/NaN/Inf and excess drift fail.
+- [ ] Switching pages retains inputs/results; events and terminal status remain correct.
+- [ ] Keyboard navigation, native selects, labels, focus, reduced motion and 860px layout work.
+- [ ] Exported logs/benchmark reports contain actual results and no credentials.
 
-## Felvagar att provoka (minst en per flode)
-
-- [ ] Annat opset an 17 -> konvertera med ONNX Version Converter fore optimize, eller fel tydligt
-- [ ] Kalibrerings-`.npz` saknar inputnycklar -> `quantize.py`/`compare.py` felar tydligt (exit != 0), ingen tyst fallback
-- [ ] `compare.py` over `--max-degradation` -> exit != 0, bygget stoppas fore distribution
-- [ ] `quark` saknas i `.venv-quark` -> exit 2 med install-hint, ingen fejkad kvantisering
-- [ ] NPU saknas/drivrutin gammal -> `run.py sys` + `bench.py --devices npu` visar CPU-fallback oppent; verifierade floden godkanns EJ
+Record model revision, model/data hashes, provider/driver/tool versions, precision,
+device, threshold, artifact paths, and test time alongside native acceptance.

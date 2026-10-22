@@ -1,151 +1,56 @@
-import * as React from "react";
-import { useMutation } from "@tanstack/react-query";
-import { Loader2, Play } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { runBenchmark } from "@/lib/tauri";
-import type { BenchmarkResult } from "@/lib/types";
+import { PathInput } from "@/components/ui/path-input";
+import { Select } from "@/components/ui/select";
+import { chooseSavePath, errorMessage, exportReport, isTauriRuntime, runBenchmark } from "@/lib/tauri";
+import { benchmarkDeviceForEp, useAppStore } from "@/stores/useAppStore";
+import type { BenchmarkRequest, TargetEp } from "@/lib/types";
 
-const ALL_DEVICES = ["cpu", "gpu", "npu"];
-
+const metric = (value?: number | null) => typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "—";
 export default function BenchmarkDashboard() {
-  const [modelPath, setModelPath] = React.useState("");
-  const [devices, setDevices] = React.useState<string[]>(["cpu", "npu"]);
-  const [results, setResults] = React.useState<BenchmarkResult[]>([]);
-
-  const mutation = useMutation({
-    mutationFn: () => runBenchmark({ modelPath: modelPath.trim(), devices, iterations: 50 }),
-    onSuccess: (data) => setResults(data),
-  });
-
-  const toggleDevice = (d: string) => {
-    setDevices((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]));
-  };
-
-  const maxThroughput = Math.max(0, ...results.map((r) => r.throughputTps));
-
-  return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Benchmark</CardTitle>
-          <CardDescription>
-            Calls run_benchmark with a compiled model path and a device list.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-col gap-2 md:flex-row">
-            <Input
-              value={modelPath}
-              onChange={(e) => setModelPath(e.target.value)}
-              placeholder="/path/to/compiled/model.onnx"
-              className="flex-1"
-            />
-            <Button
-              onClick={() => mutation.mutate()}
-              disabled={mutation.isPending || !modelPath.trim() || devices.length === 0}
-            >
-              {mutation.isPending ? <Loader2 className="animate-spin" /> : <Play />}
-              Run benchmark
-            </Button>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {ALL_DEVICES.map((d) => (
-              <button
-                key={d}
-                type="button"
-                onClick={() => toggleDevice(d)}
-                className={`rounded-md border px-3 py-1 text-sm ${
-                  devices.includes(d)
-                    ? "border-primary bg-primary text-white"
-                    : "border-input bg-background"
-                }`}
-              >
-                {d.toUpperCase()}
-              </button>
-            ))}
-          </div>
-          {mutation.isError && (
-            <Alert variant="destructive">
-              <AlertTitle>Benchmark failed</AlertTitle>
-              <AlertDescription>
-                {mutation.error instanceof Error ? mutation.error.message : String(mutation.error)}
-              </AlertDescription>
-            </Alert>
-          )}
-        </CardContent>
-      </Card>
-
-      {results.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Results</CardTitle>
-            <CardDescription>CPU vs GPU vs NPU comparison (pure div bars, no chart lib).</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b text-muted-foreground">
-                    <th className="py-2 pr-4 font-medium">Device</th>
-                    <th className="py-2 pr-4 font-medium">Latency (ms)</th>
-                    <th className="py-2 pr-4 font-medium">Throughput (tok/s)</th>
-                    <th className="py-2 pr-4 font-medium">Power (W)</th>
-                    <th className="py-2 font-medium">Relative</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {results.map((r) => (
-                    <tr key={r.device} className="border-b last:border-0">
-                      <td className="py-2 pr-4">
-                        <Badge variant="secondary">{r.device.toUpperCase()}</Badge>
-                      </td>
-                      <td className="py-2 pr-4 font-mono">{r.avgLatencyMs.toFixed(2)}</td>
-                      <td className="py-2 pr-4 font-mono">{r.throughputTps.toFixed(1)}</td>
-                      <td className="py-2 pr-4 font-mono">
-                        {r.powerW != null ? r.powerW.toFixed(1) : "—"}
-                      </td>
-                      <td className="py-2">
-                        <div className="h-3 w-48 overflow-hidden rounded bg-secondary">
-                          <div
-                            className="h-full rounded bg-primary"
-                            style={{
-                              width: `${
-                                maxThroughput > 0 ? (r.throughputTps / maxThroughput) * 100 : 0
-                              }%`,
-                            }}
-                          />
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="mt-4 space-y-2">
-              {results.map((r) => (
-                <div key={r.device} className="flex items-center gap-3 text-sm">
-                  <span className="w-16 font-medium">{r.device.toUpperCase()}</span>
-                  <div className="h-4 flex-1 overflow-hidden rounded bg-secondary">
-                    <div
-                      className="h-full rounded bg-primary transition-all"
-                      style={{
-                        width: `${maxThroughput > 0 ? (r.throughputTps / maxThroughput) * 100 : 0}%`,
-                      }}
-                    />
-                  </div>
-                  <span className="w-32 font-mono text-xs">
-                    {r.throughputTps.toFixed(1)} tok/s
-                  </span>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-    </div>
-  );
+  const s = useAppStore();
+  const [notice, setNotice] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const pinnedDevice = benchmarkDeviceForEp(s.benchmarkTargetEp);
+  async function run() {
+    const current = useAppStore.getState();
+    if (!current.benchmarkPath.trim() || !current.benchmarkDevices.length) return;
+    if (!Number.isInteger(current.benchmarkIterations) || current.benchmarkIterations < 1 || current.benchmarkIterations > 100000 || !Number.isInteger(current.benchmarkWarmup) || current.benchmarkWarmup < 0 || current.benchmarkWarmup > 10000) {
+      useAppStore.setState({ benchmarkError: "Use 1–100000 iterations and 0–10000 warmup runs." }); return;
+    }
+    const request: BenchmarkRequest = { modelPath: current.benchmarkPath.trim(), devices: [...current.benchmarkDevices], iterations: current.benchmarkIterations, warmup: current.benchmarkWarmup, jobId: current.benchmarkJobId, ...(current.benchmarkTargetEp ? { targetEp: current.benchmarkTargetEp } : {}) };
+    useAppStore.setState({ benchmarkRunning: true, benchmarkError: null, benchmarkResults: [], benchmarkRequest: request });
+    try { useAppStore.setState({ benchmarkResults: await runBenchmark(request) }); }
+    catch (error) { useAppStore.setState({ benchmarkError: errorMessage(error) }); }
+    finally { useAppStore.setState({ benchmarkRunning: false }); }
+  }
+  async function exportResults() {
+    setExporting(true); setNotice(null);
+    try { const path = await chooseSavePath(); if (path) { await exportReport(path, JSON.stringify({ request: s.benchmarkRequest, results: s.benchmarkResults, error: s.benchmarkError }, null, 2)); setNotice(`Benchmark report saved to ${path}`); } }
+    catch (error) { useAppStore.setState({ benchmarkError: errorMessage(error) }); }
+    finally { setExporting(false); }
+  }
+  return <div className="space-y-4">
+    <Card><CardHeader><CardTitle>Benchmark</CardTitle><CardDescription>Compare actual execution providers on an ONNX or EPContext artifact. Unsupported devices report their own errors.</CardDescription></CardHeader><CardContent className="space-y-4">
+      <PathInput label="Model artifact path" value={s.benchmarkPath} onChange={benchmarkPath => useAppStore.setState({ benchmarkPath, benchmarkJobId: null, benchmarkTargetEp: null })} disabled={s.benchmarkRunning} onError={benchmarkError => useAppStore.setState({ benchmarkError })} />
+      <div className="max-w-lg space-y-1.5"><label htmlFor="benchmark-provider" className="text-sm font-medium">Execution provider</label><Select id="benchmark-provider" disabled={s.benchmarkRunning} value={s.benchmarkTargetEp ?? "auto"} onValueChange={value => {
+        const benchmarkTargetEp = value === "auto" ? null : value as TargetEp;
+        const device = benchmarkDeviceForEp(benchmarkTargetEp);
+        useAppStore.setState({ benchmarkTargetEp, benchmarkDevices: device && !s.benchmarkDevices.includes(device) ? [...s.benchmarkDevices, device] : s.benchmarkDevices });
+      }} options={[{ value: "auto", label: "Auto (device defaults)" }, { value: "vitisai", label: "VitisAI · NPU" }, { value: "dml", label: "DirectML · GPU" }, { value: "cuda", label: "CUDA · GPU" }, { value: "cpu", label: "CPU" }]} /><p className="text-xs text-muted-foreground">The selected provider pins its matching device. Other comparison devices use their default providers.</p></div>
+      <fieldset disabled={s.benchmarkRunning} className="space-y-2"><legend className="text-sm font-medium">Benchmark devices</legend><div className="flex flex-wrap gap-4">{["cpu", "gpu", "npu"].map(device => <label key={device} className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={device === pinnedDevice} checked={s.benchmarkDevices.includes(device)} onChange={e => useAppStore.setState({ benchmarkDevices: e.target.checked ? [...s.benchmarkDevices, device] : s.benchmarkDevices.filter(d => d !== device) })} />{device.toUpperCase()}</label>)}</div></fieldset>
+      <div className="grid max-w-lg grid-cols-2 gap-3"><div className="space-y-1.5"><label htmlFor="benchmark-iterations" className="text-sm font-medium">Iterations</label><Input id="benchmark-iterations" type="number" min="1" max="100000" disabled={s.benchmarkRunning} value={s.benchmarkIterations} onChange={e => useAppStore.setState({ benchmarkIterations: e.target.valueAsNumber })} /></div><div className="space-y-1.5"><label htmlFor="benchmark-warmup" className="text-sm font-medium">Warmup</label><Input id="benchmark-warmup" type="number" min="0" max="10000" disabled={s.benchmarkRunning} value={s.benchmarkWarmup} onChange={e => useAppStore.setState({ benchmarkWarmup: e.target.valueAsNumber })} /></div></div>
+      <Button disabled={!isTauriRuntime() || s.benchmarkRunning || !s.benchmarkPath.trim() || !s.benchmarkDevices.length} onClick={() => void run()}>{s.benchmarkRunning ? "Benchmark running…" : "Run benchmark"}</Button>
+      {s.benchmarkRunning && <p role="status" className="text-sm text-muted-foreground">Benchmarking selected devices. You can switch pages while it runs.</p>}
+      {s.benchmarkError && <p role="alert" className="whitespace-pre-wrap text-sm text-destructive">Benchmark failed: {s.benchmarkError}</p>}
+    </CardContent></Card>
+    {!!s.benchmarkResults.length && <Card><CardHeader><CardTitle>Results</CardTitle><CardDescription className="break-all">{s.benchmarkRequest?.modelPath} · {s.benchmarkRequest?.iterations} iterations · {s.benchmarkRequest?.warmup} warmup runs</CardDescription></CardHeader><CardContent className="space-y-4">
+      <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b"><th className="p-2">Device</th><th className="p-2">Mean (ms)</th><th className="p-2">p50 (ms)</th><th className="p-2">p90 (ms)</th><th className="p-2">Throughput (inferences/s)</th><th className="p-2">Process memory (MB)</th></tr></thead><tbody>{s.benchmarkResults.map(result => <tr key={result.device} className="border-b"><th scope="row" className="p-2">{result.device.toUpperCase()}</th><td className="p-2">{metric(result.avgLatencyMs)}</td><td className="p-2">{metric(result.p50Ms)}</td><td className="p-2">{metric(result.p90Ms)}</td><td className="p-2">{metric(result.throughputPerS)}</td><td className="p-2">{metric(result.memoryMb)}</td></tr>)}</tbody></table></div>
+      {s.benchmarkResults.map(result => <div key={result.device} className="space-y-1 rounded border p-3 text-sm"><h3 className="font-semibold">{result.device.toUpperCase()}</h3><p className="break-all">Providers: {result.providers.length ? result.providers.join(", ") : "None reported"}</p>{result.error && <p role="alert" className="whitespace-pre-wrap text-destructive">{result.error}</p>}{result.device === "npu" && <p>{result.npuVerified ? "NPU node execution verified by runtime evidence." : "NPU placement unverified. Provider availability does not establish NPU node execution."}</p>}</div>)}
+      <Button variant="outline" disabled={exporting || !isTauriRuntime()} onClick={() => void exportResults()}>Export benchmark report</Button>
+      {notice && <p role="status" className="text-sm break-all">{notice}</p>}
+    </CardContent></Card>}
+  </div>;
 }

@@ -1,17 +1,17 @@
 {
   "recipe_version": "1.0",
   "name": "cua-s1/nano-text-bf16",
-  "description": "CUA-S1 nano-text-varianten: custom-exporter cua-s1 (--variant nano-text), BF16, opset 17, EPContext-deployment, power automatic.",
+  "description": "Official CUA-S1 checkpoint via the separately installed trusted loader; signed safetensors, checkpoint-configured shapes, numeric drift gate and NPU evidence required.",
   "category": "cua-s1/nano-text",
   "target": "amd-xdna",
   "conversion_request": {
-    "modelId": "cua-ai/cua-s1-nano-text",
-    "url": "https://huggingface.co/cua-ai/cua-s1-nano-text",
+    "modelId": "cua-ai/cua-s1-nano-0.1",
+    "url": "https://huggingface.co/cua-ai/cua-s1-nano-0.1",
     "precision": "bf16",
     "device": "npu",
     "powerMode": "automatic",
     "targetEp": "vitisai",
-    "outputDir": "./artifacts/nano-text-bf16"
+    "outputDir": null
   },
   "source": {
     "kind": "hf",
@@ -20,18 +20,73 @@
     "note": "Vikter lases ALLTID via safetensors (export_cua_s1.py). Atkomst kan krava HF-token."
   },
   "pipeline": {
-    "stages": ["inspection", "download", "export", "optimize", "quantize", "compile", "validate", "benchmark"],
+    "stages": [
+      "inspection",
+      "download",
+      "export",
+      "optimize",
+      "quantize",
+      "validate",
+      "compile",
+      "benchmark"
+    ],
     "opset": 17,
     "exporter": "cua-s1",
-    "exporter_constants": {
-      "CTX_LEN": 224,
-      "OPT_LEN": 96,
-      "vocab": "byte 0-255"
-    },
     "inputs": [
-      { "name": "input_ids", "dtype": "int64", "shape": [1, 128] },
-      { "name": "attention_mask", "dtype": "int64", "shape": [1, 128] }
-    ]
+      {
+        "name": "context_ids",
+        "dtype": "int64",
+        "shape": [
+          1,
+          "context_tokens"
+        ]
+      },
+      {
+        "name": "context_mask",
+        "dtype": "bool",
+        "shape": [
+          1,
+          "context_tokens"
+        ]
+      },
+      {
+        "name": "option_ids",
+        "dtype": "int64",
+        "shape": [
+          1,
+          4,
+          "option_tokens"
+        ]
+      },
+      {
+        "name": "option_token_mask",
+        "dtype": "bool",
+        "shape": [
+          1,
+          4,
+          "option_tokens"
+        ]
+      },
+      {
+        "name": "option_mask",
+        "dtype": "bool",
+        "shape": [
+          1,
+          4
+        ]
+      }
+    ],
+    "input_lengths": "Read context_tokens and option_tokens from the signed checkpoint config",
+    "output": [
+      {
+        "name": "scores",
+        "shape": [
+          1,
+          4
+        ]
+      }
+    ],
+    "byte_encoding": "UTF-8 bytes + 1 (1..256), zero padding; boolean masks"
   },
   "quantization": {
     "tool": "workers/quark/quantize.py",
@@ -40,7 +95,7 @@
     "accuracy_gate": {
       "tool": "workers/evaluation/compare.py",
       "max_degradation": 0.005,
-      "metric": "nano-text accuracy pa representativt val-set"
+      "metric": "relative mean absolute output drift on supplied evaluation NPZ arrays"
     }
   },
   "compile": {
@@ -49,7 +104,7 @@
     "winml_subcommand": "compile",
     "ep_context": {
       "enable": true,
-      "note": "EPContext-artefakt for distribution (ep.context_enable=1, embed_mode=1). App-steg: winml compile --ep vitisai -> model.vitisai.bin."
+      "note": "EPContext-artefakt for distribution (ep.context_enable=1, embed_mode=1). App-steg: winml compile --ep vitisai -> model.vitisai.onnx."
     },
     "power": "automatic",
     "cache_key": "compute_cache_key: sha256_hex(model_sha + NUL + config + NUL + quant + NUL + hw + NUL + ep + NUL + driver)"
@@ -57,15 +112,15 @@
   "commands": {
     "bootstrap": "powershell -ExecutionPolicy Bypass -File workers/bootstrap.ps1",
     "syscheck": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py sys --output-json",
-    "inspect": "workers/.venv/Scripts/python.exe workers/hf-inspector/inspect.py --model-id cua-ai/cua-s1-nano-text",
-    "export": "workers/.venv/Scripts/python.exe workers/exporters/cua-s1/export_cua_s1.py --weights <path-till-model.safetensors> --config <path-till-config.json> --model-id cua-ai/cua-s1-nano-text --output ./artifacts/nano-text-bf16/model.onnx --variant nano-text --opset 17",
+    "inspect": "workers/.venv/Scripts/python.exe workers/hf-inspector/inspect.py --model-id cua-ai/cua-s1-nano-0.1",
+    "export": "workers/.venv/Scripts/python.exe workers/exporters/cua-s1/export_cua_s1.py --weights <path-till-model.safetensors> --config <path-till-config.json> --model-id cua-ai/cua-s1-nano-0.1 --output ./artifacts/nano-text-bf16/model.onnx --variant nano-text --opset 17",
     "quantize": "workers/.venv-quark/Scripts/python.exe workers/quark/quantize.py --input ./artifacts/nano-text-bf16/model.onnx --output ./artifacts/nano-text-bf16/model.bf16.onnx --profile bf16",
-    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --in ./artifacts/nano-text-bf16/model.bf16.onnx --out ./artifacts/nano-text-bf16/model.vitisai.bin --ep vitisai",
+    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --model ./artifacts/nano-text-bf16/model.bf16.onnx --output ./artifacts/nano-text-bf16/model.vitisai.onnx --ep vitisai",
     "validate": "workers/.venv/Scripts/python.exe workers/evaluation/compare.py --baseline ./artifacts/nano-text-bf16/model.onnx --candidate ./artifacts/nano-text-bf16/model.bf16.onnx --eval-npz ./calibration/nano-text-bf16/eval.npz --max-degradation 0.005",
-    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/nano-text-bf16/model.vitisai.bin --devices npu --iterations 100 --warmup 10"
+    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/nano-text-bf16/model.vitisai.onnx --devices npu --iterations 100 --warmup 10"
   },
   "rust": {
-    "start": "start_conversion({ req: ConversionRequest })",
+    "start": "start_conversion({ request: ConversionRequest })",
     "status": "get_job_status / list_jobs",
     "events": "job://progress (inspection, download, export, optimize, quantize, compile, validate, benchmark)"
   },

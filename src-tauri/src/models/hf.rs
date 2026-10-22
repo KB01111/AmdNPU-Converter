@@ -41,10 +41,6 @@ pub struct ModelMetadata {
 #[derive(Debug, Deserialize)]
 struct HfApiResponse {
     #[serde(default)]
-    id: String,
-    #[serde(default)]
-    sha: Option<String>,
-    #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
     pipeline_tag: Option<String>,
@@ -68,8 +64,6 @@ struct HfSibling {
 struct HfSafetensors {
     #[serde(default)]
     total: Option<u64>,
-    #[serde(default)]
-    parameters: Option<std::collections::HashMap<String, u64>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -83,24 +77,25 @@ pub fn parse_hf_id(input: &str) -> Result<String, ConverterError> {
     if t.is_empty() {
         return Err(ConverterError::InvalidModel(input.to_string()));
     }
-    // Strip scheme + host if present.
-    let without_scheme = if let Some(rest) = t.strip_prefix("https://") {
+    let path = if let Some(rest) = t
+        .strip_prefix("https://huggingface.co/")
+        .or_else(|| t.strip_prefix("http://huggingface.co/"))
+        .or_else(|| t.strip_prefix("huggingface.co/"))
+    {
         rest
-    } else if let Some(rest) = t.strip_prefix("http://") {
-        rest
+    } else if t.contains("://") {
+        return Err(ConverterError::InvalidModel(input.to_string()));
     } else {
         t
     };
-    let path = if let Some(rest) = without_scheme.strip_prefix("huggingface.co/") {
-        rest
-    } else if without_scheme.contains("://") {
-        return Err(ConverterError::InvalidModel(input.to_string()));
-    } else {
-        without_scheme
-    };
     // First two segments are owner/repo; ignore tree/blob/resolve suffixes.
-    let mut segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let mut segs: Vec<&str> = path.split('/').collect();
     if segs.len() < 2 {
+        return Err(ConverterError::InvalidModel(input.to_string()));
+    }
+    if segs.iter().any(|s| s.is_empty() || *s == "." || *s == "..")
+        || (segs.len() > 2 && !matches!(segs[2], "tree" | "blob" | "resolve"))
+    {
         return Err(ConverterError::InvalidModel(input.to_string()));
     }
     // Handle URLs like org/model/tree/main, org/model/blob/..., org/model/resolve/...
@@ -114,7 +109,7 @@ pub fn parse_hf_id(input: &str) -> Result<String, ConverterError> {
             || s.len() > 96
             || !s
                 .chars()
-                .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
         {
             return Err(ConverterError::InvalidModel(input.to_string()));
         }
@@ -134,6 +129,8 @@ pub async fn hf_inspect(url: &str) -> Result<ModelMetadata, ConverterError> {
 
     let client = reqwest::Client::builder()
         .user_agent("npu-model-converter/0.1.0")
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| ConverterError::Network(e.to_string()))?;
 
@@ -159,7 +156,12 @@ pub async fn hf_inspect(url: &str) -> Result<ModelMetadata, ConverterError> {
     let arch = info
         .pipeline_tag
         .clone()
-        .or_else(|| info.tags.iter().find(|t| t.contains('-') || t.len() > 2).cloned())
+        .or_else(|| {
+            info.tags
+                .iter()
+                .find(|t| t.contains('-') || t.len() > 2)
+                .cloned()
+        })
         .unwrap_or_else(|| "transformer".to_string());
 
     let params = info
@@ -169,7 +171,11 @@ pub async fn hf_inspect(url: &str) -> Result<ModelMetadata, ConverterError> {
         .map(|t| t.to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let format = if info.siblings.iter().any(|s| s.rfilename.ends_with(".safetensors")) {
+    let format = if info
+        .siblings
+        .iter()
+        .any(|s| s.rfilename.ends_with(".safetensors"))
+    {
         "safetensors"
     } else if info.siblings.iter().any(|s| s.rfilename.ends_with(".bin")) {
         "pytorch-bin"
@@ -180,7 +186,10 @@ pub async fn hf_inspect(url: &str) -> Result<ModelMetadata, ConverterError> {
     }
     .to_string();
 
-    let license = info.license.clone().unwrap_or_else(|| "unknown".to_string());
+    let license = info
+        .license
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
 
     let input_types = info
         .tags
@@ -191,11 +200,7 @@ pub async fn hf_inspect(url: &str) -> Result<ModelMetadata, ConverterError> {
 
     // HEAD the largest safetensors shard to get a real byte size.
     let mut files: Vec<ModelFile> = Vec::new();
-    let mut estimated_bytes: u64 = info
-        .safetensors
-        .as_ref()
-        .and_then(|s| s.total)
-        .unwrap_or(0);
+    let mut estimated_bytes: u64 = 0;
 
     let mut shard_candidates: Vec<String> = info
         .siblings
@@ -215,7 +220,7 @@ pub async fn hf_inspect(url: &str) -> Result<ModelMetadata, ConverterError> {
         }
     }
     let mut probed_total: u64 = 0;
-    let mut probed_any = false;
+    let mut probed_count = 0;
     for name in &probe {
         let file_url = format!("https://huggingface.co/{model_id}/resolve/main/{name}");
         if let Ok(head) = client.head(&file_url).send().await {
@@ -223,16 +228,14 @@ pub async fn hf_inspect(url: &str) -> Result<ModelMetadata, ConverterError> {
                 if let Ok(s) = len.to_str() {
                     if let Ok(n) = s.parse::<u64>() {
                         probed_total += n;
-                        probed_any = true;
+                        probed_count += 1;
                     }
                 }
             }
         }
     }
-    if probed_any && !shard_candidates.is_empty() {
-        // Extrapolate: probed shards are representative.
-        let per = probed_total / (probe.len() as u64).max(1);
-        estimated_bytes = per * (shard_candidates.len() as u64);
+    if probed_count > 0 && probed_count == shard_candidates.len() {
+        estimated_bytes = probed_total;
     }
 
     for s in &info.siblings {
@@ -243,11 +246,7 @@ pub async fn hf_inspect(url: &str) -> Result<ModelMetadata, ConverterError> {
     }
 
     let compat = OnnxCompat {
-        export_strategy: if format == "onnx" {
-            "direct".to_string()
-        } else {
-            "optimum-export".to_string()
-        },
+        export_strategy: export_strategy(&model_id, &format).into(),
         opset: 17,
         notes: format!(
             "library={} arch={}",
@@ -268,4 +267,45 @@ pub async fn hf_inspect(url: &str) -> Result<ModelMetadata, ConverterError> {
         files,
         compat,
     })
+}
+
+fn export_strategy(model_id: &str, format: &str) -> &'static str {
+    if model_id.starts_with("cua-ai/cua-s1") {
+        "cua-s1"
+    } else if format == "onnx" {
+        "direct-onnx"
+    } else {
+        "transformers"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn hf_ids_reject_foreign_hosts_and_traversal() {
+        for input in [
+            "http://evil.test/org/model",
+            "https://evil.test/org/model",
+            "../model",
+            "org/..",
+            "org/model/../../evil",
+            "https://huggingface.co.evil.test/org/model",
+        ] {
+            assert!(parse_hf_id(input).is_err(), "accepted {input}");
+        }
+        assert_eq!(
+            parse_hf_id("https://huggingface.co/org/model/tree/main").unwrap(),
+            "org/model"
+        );
+    }
+    #[test]
+    fn strategies_match_worker_routes() {
+        assert_eq!(
+            export_strategy("cua-ai/cua-s1-forms", "safetensors"),
+            "cua-s1"
+        );
+        assert_eq!(export_strategy("org/model", "safetensors"), "transformers");
+        assert_eq!(export_strategy("org/model", "onnx"), "direct-onnx");
+    }
 }

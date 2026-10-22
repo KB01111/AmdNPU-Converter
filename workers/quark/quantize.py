@@ -34,57 +34,45 @@ def parse_args(argv=None):
 
 def load_calibration(model_inputs: list[str], calib_dir: Path | None,
                      inputs_json: dict | None, max_samples: int):
-    """Return list[dict[str, np.ndarray]] calibration feed dicts."""
     import numpy as np
 
-    feeds: list[dict] = []
-    if calib_dir is None or not calib_dir.exists():
-        return feeds
-    mapping: dict = dict(inputs_json or {})
-    files = sorted([p for p in calib_dir.iterdir() if p.suffix.lower() in (".npy", ".npz")])
-    if not files:
-        return feeds
-    # If explicit mapping given, build one feed per... actually one sample per npz-row or per file.
-    for fp in files[:max_samples]:
-        try:
-            if fp.suffix.lower() == ".npy":
-                arr = np.load(str(fp))
-                if mapping:
-                    feed = {}
-                    for inp, fname in mapping.items():
-                        if Path(fname).name == fp.name:
-                            feed[inp] = arr
-                    if not feed:
-                        # single-file maps to first input only if only one input
-                        if len(model_inputs) == 1:
-                            feed = {model_inputs[0]: arr}
-                        else:
-                            continue
-                else:
-                    if len(model_inputs) == 1:
-                        feed = {model_inputs[0]: arr}
-                    else:
-                        # cannot split one .npy across many inputs honestly
-                        print(json.dumps({"warning": f"skip {fp.name}: multi-input model needs --inputs-json or .npz"}),
-                              file=sys.stderr)
-                        continue
-                feeds.append(feed)
-            else:  # .npz
-                z = np.load(str(fp))
-                keys = list(z.files)
-                feed = {}
-                for inp in model_inputs:
-                    if inp in z:
-                        feed[inp] = np.asarray(z[inp])
-                    elif inp in mapping and mapping[inp] in z:
-                        feed[inp] = np.asarray(z[mapping[inp]])
-                if len(feed) == len(model_inputs):
-                    feeds.append(feed)
-                else:
-                    print(json.dumps({"warning": f"skip {fp.name}: missing inputs (have {keys}, need {model_inputs})"}),
-                          file=sys.stderr)
-        except Exception as e:
-            print(json.dumps({"warning": f"skip {fp.name}: {e}"}), file=sys.stderr)
+    if max_samples < 1:
+        raise ValueError('max-samples must be positive')
+    if calib_dir is None:
+        return []
+    if not calib_dir.is_dir():
+        raise ValueError('calibration directory does not exist')
+    mapping = dict(inputs_json or {})
+    if mapping and set(mapping) != set(model_inputs):
+        raise ValueError('input mapping must contain every model input exactly once')
+
+    def checked(feed):
+        if set(feed) != set(model_inputs):
+            raise ValueError('sample must contain every model input')
+        if any(a.size == 0 or not np.isfinite(a).all() for a in feed.values()):
+            raise ValueError('calibration arrays must be nonempty and finite')
+        return feed
+
+    if mapping and all(str(name).endswith('.npy') for name in mapping.values()):
+        feed = {}
+        for name, filename in mapping.items():
+            path = (calib_dir / filename).resolve()
+            if not path.is_relative_to(calib_dir.resolve()) or not path.is_file():
+                raise ValueError('mapped calibration file must exist inside calibration directory')
+            feed[name] = np.asarray(np.load(str(path), allow_pickle=False))
+        return [checked(feed)]
+
+    feeds = []
+    files = sorted(p for p in calib_dir.iterdir() if p.suffix.lower() in ('.npy', '.npz'))
+    for path in files[:max_samples]:
+        if path.suffix.lower() == '.npz':
+            with np.load(str(path), allow_pickle=False) as data:
+                feed = {name: np.asarray(data[mapping.get(name, name)]) for name in model_inputs}
+        elif len(model_inputs) == 1:
+            feed = {model_inputs[0]: np.asarray(np.load(str(path), allow_pickle=False))}
+        else:
+            raise ValueError('multi-input models require complete NPZ samples or an explicit NPY mapping')
+        feeds.append(checked(feed))
     return feeds
 
 
@@ -101,38 +89,29 @@ class NpyCalibrationDataReader:
         except StopIteration:
             return None
 
+    def rewind(self):
+        self._it = iter(self._feeds)
+
 
 def get_model_inputs(onnx_path: str) -> list[str]:
     import onnx
     m = onnx.load(onnx_path)
-    return [i.name for i in m.graph.input]
+    initializers = {i.name for i in m.graph.initializer}
+    return [i.name for i in m.graph.input if i.name not in initializers]
 
 
 def profile_to_qconfig(profile: str):
-    """Build quark QConfig for profile. Raises ImportError if quark missing."""
+    """Use documented presets, never substitute an unrelated default profile."""
+    presets = {"bf16": "BF16", "a16w8": "A16W8", "a8w8": "A8W8", "int8": "XINT8"}
+    if profile not in presets:
+        raise ValueError(f"unsupported quantization profile: {profile}")
     try:
         from quark.onnx import QConfig  # type: ignore
-    except Exception as e:
-        raise ImportError(
-            "amd-quark is not installed in this environment. "
-            "Activate workers/.venv-quark and run: uv pip install -r requirements-quark.txt "
-            f"(import error: {e})"
-        )
-    # Best-effort mapping; quark API varies by version — keep generic kwargs.
-    kw: dict = {}
-    if profile == "bf16":
-        kw = {"weight_qtype": "bf16", "activation_qtype": "bf16"}
-    elif profile == "a16w8":
-        kw = {"weight_qtype": "int8", "activation_qtype": "float16"}
-    elif profile == "a8w8":
-        kw = {"weight_qtype": "int8", "activation_qtype": "int8"}
-    elif profile == "int8":
-        kw = {"weight_qtype": "int8", "activation_qtype": "int8", "per_channel": True}
-    try:
-        return QConfig(**kw)
-    except TypeError:
-        # Older/newer quark signature: fall back to no-arg QConfig honestly
-        return QConfig()
+    except ImportError:
+        # Quark 0.8/0.9 use the earlier documented configuration API.
+        from quark.onnx.quantization.config import Config, get_default_config
+        return Config(global_quant_config=get_default_config(presets[profile]))
+    return QConfig.get_default_config(presets[profile])
 
 
 def main(argv=None) -> int:
@@ -142,7 +121,17 @@ def main(argv=None) -> int:
     if not inp.exists():
         print(json.dumps({"error": f"input not found: {inp}"}), file=sys.stderr)
         return 2
-    inputs_json = json.loads(args.inputs_json) if args.inputs_json else None
+    try:
+        if args.max_samples < 1:
+            raise ValueError("max-samples must be positive")
+        inputs_json = json.loads(args.inputs_json) if args.inputs_json else None
+        if inputs_json is not None and not isinstance(inputs_json, dict):
+            raise ValueError("inputs-json must be a mapping")
+        if inp.resolve() == outp.resolve() or outp.exists():
+            raise ValueError("output must be a new path distinct from input")
+    except Exception as e:
+        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        return 2
 
     try:
         model_inputs = get_model_inputs(str(inp))
@@ -156,34 +145,24 @@ def main(argv=None) -> int:
     except Exception as e:
         print(json.dumps({"error": f"calibration load failed: {e}"}), file=sys.stderr)
         return 1
+    if args.profile != "bf16" and not feeds:
+        print(json.dumps({"error": "representative calibration data for every model input is required"}), file=sys.stderr)
+        return 2
 
     # --- hard requirement: quark must be installed ---
     try:
         from quark.onnx import ModelQuantizer  # type: ignore
         qconfig = profile_to_qconfig(args.profile)
-    except ImportError as e:
+    except Exception as e:
         print(json.dumps({"error": str(e), "hint": "use workers/.venv-quark (bootstrap.ps1) with requirements-quark.txt"}),
               file=sys.stderr)
         return 2
 
     data_reader = NpyCalibrationDataReader(feeds) if feeds else None
-    if not feeds:
-        print(json.dumps({"warning": "no calibration data; running static-shape quantize without calibration reader"}),
-              file=sys.stderr)
     try:
-        quantizer = ModelQuantizer(str(inp), qconfig)
-        # API surface differs across quark versions; try common entry points honestly.
-        if hasattr(quantizer, "quantize"):
-            try:
-                quantizer.quantize(str(outp), calibration_data_reader=data_reader)
-            except TypeError:
-                quantizer.quantize(str(outp))
-        elif hasattr(quantizer, "quantize_model"):
-            quantizer.quantize_model(str(outp), calibration_data_reader=data_reader)
-        else:
-            print(json.dumps({"error": "quark ModelQuantizer has no quantize()/quantize_model() entry point"}),
-                  file=sys.stderr)
-            return 1
+        outp.parent.mkdir(parents=True, exist_ok=True)
+        quantizer = ModelQuantizer(qconfig)
+        quantizer.quantize_model(str(inp), str(outp), data_reader)
     except Exception as e:
         print(json.dumps({"error": f"quark quantization failed: {e}"}), file=sys.stderr)
         return 1

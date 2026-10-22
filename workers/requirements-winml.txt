@@ -1,7 +1,5 @@
 # WinML isolated environment (version-locked separately from quark).
 # Install: uv pip install -r requirements-winml.txt
-winml-cli>=1.0
-onnx>=1.16
-onnxruntime>=1.18
-onnxruntime-directml; sys_platform == 'win32'
-numpy>=1.26
+winml-cli==0.4.0
+# The CLI owns matching windowsml/onnxruntime-windowsml/onnx/numpy versions.
+# Do not add CPU, DirectML or GPU ORT wheels: they overwrite the same namespace.

@@ -9,10 +9,11 @@ dependencies = [
     "safetensors>=0.4",
     "torch>=2.2",
     "onnx>=1.16",
-    "onnxruntime>=1.18",
+    "onnxruntime>=1.18; sys_platform != 'win32'",
     "onnxruntime-directml; sys_platform == 'win32'",
     "numpy>=1.26",
     "transformers>=4.41",
+    "pillow>=10",
     "pydantic>=2.6",
     "click>=8.1",
     "rich>=13.7",
@@ -27,3 +28,7 @@ target-version = "py311"
 [build-system]
 requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Worker scripts are bundled as resources; install only their dependencies.
+packages = []

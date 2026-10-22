@@ -1,29 +1,38 @@
-# Test-fixtures — riktiga modeller (INGA fejkade vikter)
+# Test fixtures and real-model acceptance
 
-Alla E2E-tester kor mot verkliga vikter. `trust_remote_code=false` galler alltid
-(hardkodat i `export_hf.py`; `export_cua_s1.py` laster endast safetensors).
-Ladda ner via appen eller `huggingface_hub`; committa aldrig
-`.onnx`/`.safetensors`/`.bin` (se `.gitignore`: `downloads/`, `artifacts/`,
-`calibration/`-radata hor inte hemma i git om de innehaller stora filer).
+Automated UI and worker tests use explicit native/SDK fixtures. They do not
+download weights, run real Quark/WinML compilation, measure model accuracy, or
+establish NPU acceptance. Real-model checks are the separate manual procedure in
+[e2e-conversion.md](e2e-conversion.md).
 
-| # | Modell (HF-ID) | Typ | Anvands i | Inputs / shapes | Kalibrering |
-|---|---|---|---|---|---|
-| 1 | `facebook/convnext-tiny-224` | CNN, image-classification (ImageNet-1k, 224x224) | Flode A, B; recept `cnn-a8w8`, `npu-default`, `hf-default`, `onnx-import` | batch 1 (`--batch 1`); NPU-mal 1x3x224x224 via optimize/compile | imagenet-1k-val-subset, 300 samples (CNN) / 100 (default) som `.npz` i `./calibration/<recept>/` |
-| 2 | `prajjwal1/bert-tiny` | Liten BERT (L=2, H=128) | Recept `transformer-bf16`; alternativ fixture for flode B | `--seq-len 128 --batch 1` -> `input_ids`/`attention_mask` 1x128 | Ingen (bf16, ingen kvantisering) |
-| 3 | `cua-ai/cua-s1-forms` | CUA-S1 Forms (exporter `cua-s1`, byte-vocab 0-255) | Flode C; recept `forms-a16w8` | `context_ids` 1x224, `context_mask` 1x224, `option_ids` 1x4x96, `option_token_mask` 1x4x96, `option_mask` 1x4 -> `scores` 1x4 | cua-s1-forms calibration split (verkliga formular), 200 samples som `.npz` med en nyckel per inputnamn |
-| 4 | `TinyLlama/TinyLlama-1.1B-Chat-v1.0` | Liten LLM (~1.1B) | Recept `llm-int4` | `--seq-len 2048 --batch 1` | wikitext-2-raw-v1 val, 512 samples (int4 weight-only, group 128 — nar worker-stod finns; tills dess int8/a16w8) |
-| 5 | `cua-ai/cua-s1-nano-text` | CUA-S1 nano-text (exporter `cua-s1 --variant nano-text`) | Recept `nano-text-bf16` | `input_ids` 1x128, `attention_mask` 1x128 | Ingen (bf16) |
+Potential real-model inputs, subject to repository access and installed exporter
+support:
 
-Anmarkningar:
-- `cua-ai/*` ar projektets egna modeller — atkomst kan krava HF-token
-  (`--token` / `HF_TOKEN`). Utan atkomst kan flode C inte koras: dokumentera
-  det i testresultatet istallet for att fejka vikter.
-- For ONNX-import (flode A): exportera forst fixture 1 med
-  `exporters/transformers/export_hf.py --opset 17` och placera resultatet i
-  `downloads/` (ignorerad av git).
-- Kalibreringsdata: `.npy` (en-inputsmodeller) eller `.npz` (en array per
-  inputnamn); multi-input `.npy` avvisas av `quantize.py` med varning.
-  `--reference-metrics '{"accuracy": ...}'` + `compare.py --max-degradation`
-  ar accuracy-grinden (quantize-rapporten satter aldrig sjalv `accuracy_delta`).
-- NPU-bevis: `bench.py --devices npu` maste visa NPU-provider
-  (VitisAIExecutionProvider forstahandsval); CPU-fallback = underkant test.
+| Model | Purpose | Input preparation |
+|---|---|---|
+| `facebook/convnext-tiny-224` | image classification export | processor-generated pixel_values; representative images for evaluation/calibration |
+| `prajjwal1/bert-tiny` | small text model export | tokenizer arrays, including every exported input |
+| `cua-ai/cua-s1-forms` | official Forms checkpoint | official collator, checkpoint-defined context/option lengths, boolean masks |
+| `cua-ai/cua-s1-nano-0.1` | official Nano text checkpoint | text checkpoint and official collator; exported wrapper uses the five context/option arrays |
+
+CUA requires the separately installed trusted upstream `cua_s1` implementation.
+Forms source files are `cua-s1-forms.safetensors` plus its matching JSON;
+Nano text uses `text/model.safetensors` and `text/config.json`. The download
+worker normalizes these to a local `model.safetensors`/`config.json` pair.
+Bytes are encoded as UTF-8 byte values plus one, zero is padding, and masks are
+boolean. Derive lengths from the actual checkpoint configuration.
+
+Supply real `.npz` evaluation data with one array per ONNX input. Integer
+quantization also needs representative complete calibration samples. Synthetic
+export/benchmark inputs are only tracing/timing inputs. Numeric output drift is
+not an accuracy or perplexity score.
+
+Never commit private weights, model tokens, or large calibration datasets. The
+download/export paths disable remote code and reject pickle-only model loading.
+Access failures and missing tool/model support must be recorded as unavailable
+acceptance, rather than replaced with fake weights or substitute architectures.
+
+The INT4 recipe is an unsupported reference; TinyLlama/other LLMs are not accepted
+fixtures for the current ONNX pipeline. Real NPU evidence requires actual
+profiled NPU node execution without fallback, together with model/data hashes
+and provider/driver/tool versions.

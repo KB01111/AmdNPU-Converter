@@ -4,6 +4,8 @@
 # --- Node / Tauri frontend ---
 node_modules/
 dist/
+test-results/
+playwright-report/
 
 # --- Rust / Tauri backend ---
 target/

@@ -87,6 +87,8 @@ def validate_onnx(path: str, example_inputs: dict, torch_outputs=None,
             return report
     try:
         outs = sess.run(None, feed)
+        if not outs:
+            raise ValueError("model returned no outputs")
         report["ort_run"] = "ok"
         report["num_outputs"] = len(outs)
         report["output_shapes"] = [list(o.shape) for o in outs]
@@ -98,6 +100,8 @@ def validate_onnx(path: str, example_inputs: dict, torch_outputs=None,
             import numpy as _np
             if not isinstance(torch_outputs, (list, tuple)):
                 torch_outputs = [torch_outputs]
+            if not torch_outputs or len(torch_outputs) != len(outs):
+                raise ValueError(f"output count mismatch: reference={len(torch_outputs)}, ONNX={len(outs)}")
             diffs = []
             for to, oo in zip(torch_outputs, outs):
                 try:
@@ -109,13 +113,15 @@ def validate_onnx(path: str, example_inputs: dict, torch_outputs=None,
                 to = _np.asarray(to, dtype=_np.float64)
                 oo = _np.asarray(oo, dtype=_np.float64)
                 if to.shape != oo.shape:
-                    diffs.append({"shape_mismatch": [list(to.shape), list(oo.shape)]})
+                    diffs.append({"shape_mismatch": [list(to.shape), list(oo.shape)], "allclose": False})
+                elif to.size == 0 or not _np.isfinite(to).all() or not _np.isfinite(oo).all():
+                    diffs.append({"error": "empty or nonfinite outputs", "allclose": False})
                 else:
                     diffs.append({"max_abs_diff": float(_np.max(_np.abs(to - oo))),
                                   "allclose": bool(_np.allclose(to, oo, rtol=rtol, atol=atol))})
             report["numeric_compare"] = diffs
         except Exception as e:
-            report["numeric_compare"] = f"compare failed: {e}"
+            report["numeric_compare"] = [{"error": f"compare failed: {e}", "allclose": False}]
     return report
 
 

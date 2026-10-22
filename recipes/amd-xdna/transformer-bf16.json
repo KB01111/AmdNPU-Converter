@@ -11,7 +11,7 @@
     "device": "npu",
     "powerMode": "automatic",
     "targetEp": "vitisai",
-    "outputDir": "./artifacts/transformer-bf16"
+    "outputDir": null
   },
   "source": {
     "kind": "hf",
@@ -19,13 +19,25 @@
     "safetensors_only": true
   },
   "pipeline": {
-    "stages": ["inspection", "download", "export", "optimize", "quantize", "compile", "validate", "benchmark"],
+    "stages": [
+      "inspection",
+      "download",
+      "export",
+      "optimize",
+      "quantize",
+      "validate",
+      "compile",
+      "benchmark"
+    ],
     "opset": 17,
     "exporter": "transformers",
     "target_shapes": {
       "batch": 1,
       "sequence": 128,
-      "inputs": ["input_ids 1x128", "attention_mask 1x128"],
+      "inputs": [
+        "input_ids 1x128",
+        "attention_mask 1x128"
+      ],
       "note": "export_hf.py tar --seq-len/--batch och emitterar dynamiska axlar; fixering sker i winml optimize/compile."
     }
   },
@@ -36,7 +48,7 @@
     "accuracy_gate": {
       "tool": "workers/evaluation/compare.py",
       "max_degradation": 0.005,
-      "metric": "MNLI-matched accuracy eller MLM-loss pa representativt val-set"
+      "metric": "relative mean absolute output drift on supplied evaluation NPZ arrays"
     }
   },
   "compile": {
@@ -45,7 +57,7 @@
     "winml_subcommand": "compile",
     "ep_context": {
       "enable": true,
-      "note": "EPContext-artefakt for distribution (ep.context_enable=1, embed_mode=1). App-steg: winml compile --ep vitisai -> model.vitisai.bin."
+      "note": "EPContext-artefakt for distribution (ep.context_enable=1, embed_mode=1). App-steg: winml compile --ep vitisai -> model.vitisai.onnx."
     },
     "power": "automatic",
     "cache_key": "compute_cache_key: sha256_hex(model_sha + NUL + config + NUL + quant + NUL + hw + NUL + ep + NUL + driver)"
@@ -55,14 +67,14 @@
     "syscheck": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py sys --output-json",
     "inspect": "workers/.venv/Scripts/python.exe workers/hf-inspector/inspect.py --model-id prajjwal1/bert-tiny",
     "export": "workers/.venv/Scripts/python.exe workers/exporters/transformers/export_hf.py --model-id prajjwal1/bert-tiny --output ./artifacts/transformer-bf16/model.onnx --opset 17 --batch 1 --seq-len 128",
-    "optimize": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py optimize -- --in ./artifacts/transformer-bf16/model.onnx --out ./artifacts/transformer-bf16/model.opt.onnx",
+    "optimize": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py optimize -- --model ./artifacts/transformer-bf16/model.onnx --output ./artifacts/transformer-bf16/model.opt.onnx",
     "quantize": "workers/.venv-quark/Scripts/python.exe workers/quark/quantize.py --input ./artifacts/transformer-bf16/model.opt.onnx --output ./artifacts/transformer-bf16/model.bf16.onnx --profile bf16",
-    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --in ./artifacts/transformer-bf16/model.bf16.onnx --out ./artifacts/transformer-bf16/model.vitisai.bin --ep vitisai",
+    "compile": "workers/.venv-winml/Scripts/python.exe workers/winml/run.py compile -- --model ./artifacts/transformer-bf16/model.bf16.onnx --output ./artifacts/transformer-bf16/model.vitisai.onnx --ep vitisai",
     "validate": "workers/.venv/Scripts/python.exe workers/evaluation/compare.py --baseline ./artifacts/transformer-bf16/model.opt.onnx --candidate ./artifacts/transformer-bf16/model.bf16.onnx --eval-npz ./calibration/transformer-bf16/eval.npz --max-degradation 0.005",
-    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/transformer-bf16/model.vitisai.bin --devices npu --iterations 100 --warmup 10"
+    "verify_npu": "workers/.venv/Scripts/python.exe workers/evaluation/bench.py --model ./artifacts/transformer-bf16/model.vitisai.onnx --devices npu --iterations 100 --warmup 10"
   },
   "rust": {
-    "start": "start_conversion({ req: ConversionRequest })",
+    "start": "start_conversion({ request: ConversionRequest })",
     "status": "get_job_status / list_jobs",
     "events": "job://progress (inspection, download, export, optimize, quantize, compile, validate, benchmark)"
   },
